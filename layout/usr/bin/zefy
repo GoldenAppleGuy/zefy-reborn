@@ -1,0 +1,204 @@
+#!/var/jb/bin/sh
+# JB is where the jailbreak lives: "" rootful, /var/jb rootless, a .jbroot folder on roothide (found from this file).
+JB=${0%/usr/bin/zefy}
+case $0 in */usr/bin/zefy) ;; *) JB=/var/jb ;; esac
+# zefy: control Spotify from the command line without the "Open in Spotify" prompt.
+# The request goes to the tweak through a file in Spotify's data folder.
+
+usage() {
+    cat <<U
+Usage: zefy [option] [value]
+  <link>           play a spotify: or open.spotify.com link
+  -n <link>        open the page without playing
+  -s [0|1|2]       shuffle: 0 off, 1 on (default), 2 toggle
+  -r [0|1|2]       repeat: 0 off, 1 track (default), 2 playlist
+  --next           skip to the next track
+  --prev           skip to the previous track
+  --pause          pause
+  --resume         resume
+  --seek <sec>     move the position by seconds, negative goes back
+  --queue <uri>    add a track to the queue (spotify:track:<id>)
+  -k [0|1|2]       like the playing track: 0 unlike, 1 like (default), 2 toggle
+  -a <playlist>    add the playing track to a playlist (spotify:playlist:<id>)
+  -d <playlist>    remove the playing track from a playlist
+  --myplaylist     play your saved playlist
+  --addtomyplaylist | --removefrommyplaylist
+                   add or remove the playing track in your saved playlist
+  --setmyplaylist <playlist>
+                   save the playlist the three options above use
+  --radio [uri]    play radio from a track, album, artist or playlist; none = the playing track
+  --likedsongs     play Liked Songs
+  --playlist <name>  play a playlist from your library by name
+  --album <name>   play a saved album by name
+  --artist <name>  play a followed artist by name
+  --find <name>    play the best match among playlists, albums, artists and recents
+  --status         show what is playing
+  --sleep <min>    pause after that many minutes; --sleep off cancels, --sleep status shows the time left
+  --randomrecent   play a random item from your recently played
+  --randomlibrary  play a random playlist from your library
+  --randomalbum    play a random saved album
+  -h               show this help
+Spotify decides which controls an account may use.
+U
+}
+
+domain=com.goldenappleguy.zefyreborn
+mine() {
+    m=$($JB/usr/bin/defaults read $domain myPlaylist 2>/dev/null)
+    [ -n "$m" ] || fail "no saved playlist; run: zefy --setmyplaylist <playlist>"
+}
+fail() { echo "zefy: $*" >&2; exit 2; }
+num() { case "$1" in ''|*[!0-9.-]*) fail "'$1' is not a number" ;; esac; }
+mode() { case "$1" in 0|1|2) ;; *) fail "'$1' must be 0, 1 or 2" ;; esac; }
+
+foreground=0
+wait_result=0
+case "$1" in
+    --sleep)
+        [ $# -eq 2 ] || fail "--sleep needs minutes, off or status"
+        # SpringBoard holds the timer, so the request goes to it, not to Spotify.
+        rm -f $JB/tmp/zefyreborn.sbresult
+        printf '%s\n' "sleep $2" > $JB/tmp/zefyreborn.sbcmd.tmp && mv $JB/tmp/zefyreborn.sbcmd.tmp $JB/tmp/zefyreborn.sbcmd
+        n=0
+        while [ $n -lt 25 ]; do
+            if [ -r $JB/tmp/zefyreborn.sbresult ]; then cat $JB/tmp/zefyreborn.sbresult; exit 0; fi
+            sleep 0.2; n=$((n+1))
+        done
+        echo "SpringBoard did not answer (respring after installing)"; exit 1 ;;
+    --status) wait_result=2 ;;
+    --playlist|--album|--artist|--find)
+        [ $# -ge 2 ] || fail "$1 needs a name"
+        kind=${1#--}; [ "$kind" = find ] && kind=any
+        shift; line="zefyreborn:cmd by-name $kind $*"; wait_result=1 ;;
+    ""|-h|--help) usage; exit 0 ;;
+    -n) [ $# -eq 2 ] || fail "-n needs a link"; line="zefyreborn:cmd navigate $2"; foreground=1 ;;
+    -s) v=${2:-1}; mode "$v"; line="zefyreborn:cmd shuffle $v" ;;
+    -r) v=${2:-1}; mode "$v"; line="zefyreborn:cmd repeat $v" ;;
+    --next) line="zefyreborn:cmd next" ;;
+    --prev) line="zefyreborn:cmd prev" ;;
+    --pause) line="zefyreborn:cmd pause" ;;
+    --resume) line="zefyreborn:cmd resume" ;;
+    --seek) [ $# -eq 2 ] || fail "--seek needs seconds"; num "$2"; line="zefyreborn:cmd seek $2" ;;
+    -k) v=${2:-1}; mode "$v"; line="zefyreborn:cmd like $v" ;;
+    -a) [ $# -eq 2 ] || fail "-a needs a playlist uri"; line="zefyreborn:cmd playlist-add $2" ;;
+    -d) [ $# -eq 2 ] || fail "-d needs a playlist uri"; line="zefyreborn:cmd playlist-remove $2" ;;
+    --setmyplaylist) [ $# -eq 2 ] || fail "--setmyplaylist needs a playlist uri"; $JB/usr/bin/defaults write $domain myPlaylist "$2"; echo "saved $2"; exit 0 ;;
+    --myplaylist) mine; line="${m}:play"; foreground=1 ;;
+    --addtomyplaylist) mine; line="zefyreborn:cmd playlist-add $m" ;;
+    --removefrommyplaylist) mine; line="zefyreborn:cmd playlist-remove $m" ;;
+    --radio) if [ $# -ge 2 ]; then line="zefyreborn:cmd radio $2"; else line="zefyreborn:cmd radio"; fi ;;
+    --randomrecent) line="zefyreborn:cmd random recent" ;;
+    --randomlibrary) line="zefyreborn:cmd random library" ;;
+    --randomalbum) line="zefyreborn:cmd random albums" ;;
+    --likedsongs) line="zefyreborn:cmd likedsongs" ;;
+    --queue) [ $# -eq 2 ] || fail "--queue needs a track uri"; line="zefyreborn:cmd queue $2" ;;
+    -*) fail "unknown option $1 (see -h)" ;;
+    *) [ $# -eq 1 ] || fail "one link at a time"; line="$1"; foreground=1 ;;
+esac
+
+# Finding Spotify's data folder means reading every app container's metadata, which is slow, so the answer
+# is kept in a cache file and checked cheaply on each run.
+cache=$JB/tmp/zefyreborn.dir
+dir=
+if [ -r "$cache" ]; then
+    d=$(cat "$cache")
+    if [ -d "$d/Documents" ] && grep -q com.spotify.client "$d/.com.apple.mobile_container_manager.metadata.plist" 2>/dev/null; then
+        dir="$d/Documents"
+    fi
+fi
+if [ -z "$dir" ]; then
+    for d in /var/mobile/Containers/Data/Application/*; do
+        if grep -q com.spotify.client "$d/.com.apple.mobile_container_manager.metadata.plist" 2>/dev/null; then
+            dir="$d/Documents"
+            printf '%s\n' "$d" > "$cache" 2>/dev/null
+            break
+        fi
+    done
+fi
+
+# On iOS 15 this user cannot read Spotify's folder at all, so the request goes through SpringBoard, which can.
+# SpringBoard can also wake Spotify when it is suspended in the background (a file alone cannot), so a request
+# goes through it whenever it answers; the file is the fallback when it does not.
+sb=$JB/tmp/zefyreborn
+use_relay=0
+if [ -z "$dir" ]; then
+    use_relay=1
+elif [ $wait_result -ne 2 ]; then
+    rm -f $sb.sbresult
+    printf '%s\n' "ping" > $sb.sbcmd.tmp && mv $sb.sbcmd.tmp $sb.sbcmd
+    n=0
+    while [ $n -lt 10 ]; do
+        [ -r $sb.sbresult ] && { use_relay=1; break; }
+        sleep 0.1; n=$((n+1))
+    done
+fi
+if [ $use_relay -eq 1 ]; then
+    ask() {   # ask <request> <seconds>: send a request to SpringBoard and wait for its answer
+        rm -f $sb.sbresult
+        printf '%s\n' "$1" > $sb.sbcmd.tmp && mv $sb.sbcmd.tmp $sb.sbcmd
+        n=0; max=$(( $2 * 5 ))
+        while [ $n -lt $max ]; do
+            [ -r $sb.sbresult ] && return 0
+            sleep 0.2; n=$((n+1))
+        done
+        return 1
+    }
+    if [ $wait_result -eq 2 ]; then
+        ask "nowplaying" 3 || { echo "SpringBoard did not answer (is the tweak loaded there?)"; exit 1; }
+        [ "$(cat $sb.sbresult)" = none ] && { echo "Nothing played yet"; exit 0; }
+        title=; artist=; album=; playing=; liked=
+        while IFS='=' read -r k v; do
+            case "$k" in title) title=$v ;; artist) artist=$v ;; album) album=$v ;; playing) playing=$v ;; liked) liked=$v ;; esac
+        done < $sb.sbresult
+        state=paused; [ "$playing" = 1 ] && state=playing
+        mark=; [ "$liked" = 1 ] && mark=" (liked)"
+        if ! ps -ax -o comm | grep -q "Spotify.app/Spotify"; then echo "Spotify is not running (last: $title - $artist)"; exit 0; fi
+        echo "$title - $artist ($album) [$state]$mark"
+        exit 0
+    fi
+    if [ $wait_result -eq 1 ]; then
+        ask "relay-wait $line" 10 && cat $sb.sbresult || echo "No answer from Spotify"
+    else
+        ask "relay $line" 3 || { echo "SpringBoard did not answer (is the tweak loaded there?)"; exit 1; }
+    fi
+    exit 0
+fi
+# Spotify cannot read the tweak's preferences, so hand it the current values in a file.
+for k in enabled; do
+    v=$($JB/usr/bin/defaults read $domain $k 2>/dev/null); [ -n "$v" ] || { [ "$k" = enabled ] && v=1 || v=0; }
+    settings="$settings$k=$v
+"
+done
+if [ $wait_result -eq 2 ]; then
+    f="$dir/zefyreborn.nowplaying"
+    [ -r "$f" ] || { echo "Nothing played yet"; exit 0; }
+    title=; artist=; album=; playing=; liked=
+    while IFS='=' read -r k v; do
+        case "$k" in title) title=$v ;; artist) artist=$v ;; album) album=$v ;; playing) playing=$v ;; liked) liked=$v ;; esac
+    done < "$f"
+    state=paused; [ "$playing" = 1 ] && state=playing
+    mark=; [ "$liked" = 1 ] && mark=" (liked)"
+    # The file only changes while Spotify runs, so a stopped app means the last known track, not a playing one.
+    if ! ps -ax -o comm | grep -q "Spotify.app/Spotify"; then
+        echo "Spotify is not running (last: $title - $artist)"
+        exit 0
+    fi
+    echo "$title - $artist ($album) [$state]$mark"
+    exit 0
+fi
+[ $wait_result -eq 1 ] && rm -f "$dir/zefyreborn.result"   # a stale reply must not answer this request
+printf '%s' "$settings" > "$dir/zefyreborn.settings"
+printf '%s\n' "$line" > "$dir/zefyreborn.cmd.tmp" && mv "$dir/zefyreborn.cmd.tmp" "$dir/zefyreborn.cmd"
+
+# Open Spotify for links; for controls only start it when it is not running.
+if [ $foreground -eq 1 ] || ! ps -ax -o comm | grep -q "Spotify.app/Spotify"; then
+    $JB/usr/bin/uiopen --bundleid com.spotify.client
+fi
+if [ $wait_result -eq 1 ]; then
+    n=0
+    while [ $n -lt 40 ]; do
+        if [ -r "$dir/zefyreborn.result" ]; then cat "$dir/zefyreborn.result"; exit 0; fi
+        sleep 0.2; n=$((n+1))
+    done
+    echo "No answer from Spotify"
+fi

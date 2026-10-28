@@ -1,0 +1,14 @@
+#!/var/jb/bin/sh
+# Remove what the tweak leaves in shared temporary folders. This does nothing during an upgrade, and it leaves
+# Spotify's own data folder alone.
+case "$1" in
+    remove|purge)
+        rm -rf /var/jb/tmp/zefyreborn-art /var/jb/tmp/zefyreborn.dir
+        rm -f /var/jb/tmp/zefyreborn.debug /var/jb/tmp/zefyreborn.log /var/jb/tmp/zefyreborn.sbcmd \
+              /var/jb/tmp/zefyreborn.sbcmd.tmp /var/jb/tmp/zefyreborn.sbresult
+        ;;
+esac
+case "$1" in
+    purge) rm -f /var/jb/var/mobile/Library/Preferences/com.goldenappleguy.zefyreborn.plist ;;
+esac
+exit 0

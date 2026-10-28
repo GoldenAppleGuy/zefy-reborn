@@ -1,0 +1,27 @@
+#!/var/jb/bin/sh
+# Remember where Spotify keeps its data so the zefy command starts fast, and carry over what the package this one
+# replaces (SpotifyURLPlay) left behind.
+OLD=com.goldenappleguy.spotifyurlplay
+NEW=com.goldenappleguy.zefyreborn
+PREFS=/var/jb/var/mobile/Library/Preferences
+
+# Settings: copy the old preferences once, if the new ones do not exist yet.
+if [ -f $PREFS/$OLD.plist ] && [ ! -f $PREFS/$NEW.plist ]; then
+    cp $PREFS/$OLD.plist $PREFS/$NEW.plist
+    chown mobile $PREFS/$NEW.plist 2>/dev/null
+fi
+
+for d in /var/mobile/Containers/Data/Application/*; do
+    if grep -q com.spotify.client "$d/.com.apple.mobile_container_manager.metadata.plist" 2>/dev/null; then
+        printf '%s\n' "$d" > /var/jb/tmp/zefyreborn.dir
+        chown mobile /var/jb/tmp/zefyreborn.dir 2>/dev/null
+        chmod 644 /var/jb/tmp/zefyreborn.dir
+        # Files the old package left in Spotify's own folder.
+        rm -f "$d"/Documents/spotifyurlplay.* 2>/dev/null
+        break
+    fi
+done
+# Old temporary files and the old cover cache.
+rm -rf /var/jb/tmp/spotifyplay.dir /var/jb/tmp/spotifyplay-art
+rm -f /var/jb/tmp/spotifyurlplay.* 2>/dev/null
+exit 0
