@@ -1101,7 +1101,10 @@ static void sendSpotifyCommand(NSString *line) { sendSpotifyCommandEx(line, YES)
 @end
 
 static BOOL commandStartsPlayback(NSString *line) {
-    if (![line hasPrefix:@"zefyreborn:"]) return YES;   // a link
+    if (![line hasPrefix:@"zefyreborn:"]) {   // a link only restarts Spotify when it carries a play flag
+        BOOL shuffle;
+        return parseLink([NSURL URLWithString:line], &shuffle) != nil;
+    }
     if ([line isEqualToString:kResumeCommand]) return YES;
     for (NSString *name in @[@"resume", @"by-name", @"random", @"radio", @"likedsongs"])
         if ([line hasPrefix:[kCommandPrefix stringByAppendingString:name]]) return YES;
