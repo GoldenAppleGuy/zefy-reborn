@@ -2,6 +2,12 @@
 
 Private build. Versions are listed newest first.
 
+## 1.0.1
+- Quick Play no longer takes over the play press of a paused session from another app, such as a video or a podcast. It only starts Spotify when nothing, or Apple's Music app, owns the media session.
+- Resume works on iOS 14: the tweak uses the media function iOS 14 has, keeps Spotify running long enough after a background launch to read the waiting command, and sends a resume again when Spotify drops it.
+- Playing by name, Liked Songs, radio and the random picks work with Spotify 9.0 and 8.x. Their content browser differs from 9.1 in several ways, and Spotify 9.0 no longer aborts on a play request.
+- The package asks for iOS 14 and builds for rootless, roothide and rootful.
+
 ## 1.0.0: first release
 - Added an icon for the package and the Settings row.
 

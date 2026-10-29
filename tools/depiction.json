@@ -9,7 +9,7 @@
       "views": [
         {
           "class": "DepictionMarkdownView",
-          "markdown": "Zefy Reborn lets Spotify behave like the built-in music player. Press play in Control Center with Spotify closed and it starts, with a short \"Starting Spotify\" note while it loads. Open a Spotify link with a play flag and the music starts instead of just opening the page.\n\n- **Control Center**: the play button starts Spotify, and a row of recent playlists and albums appears in the media module.\n- **Links**: add a play flag to a Spotify link, such as `?play=true`, to start it right away. Shuffle works the same way.\n- **Icon menu**: press and hold the Spotify icon to like the current track, play a random pick, or start radio.\n- **Command line**: the `zefy` command controls playback, the queue, likes, playlists and a sleep timer.\n- **Free accounts**: built for accounts without Premium, so it avoids anything that needs it.\n\nWorks with Spotify 8.6.64 to 9.1.94. Play by name and random picks need a recent version of Spotify."
+          "markdown": "Zefy Reborn lets Spotify behave like the built-in music player. Press play in Control Center with Spotify closed and it starts, with a short \"Starting Spotify\" note while it loads. Open a Spotify link with a play flag and the music starts instead of just opening the page.\n\n- **Control Center**: the play button starts Spotify, and a row of recent playlists and albums appears in the media module.\n- **Links**: add a play flag to a Spotify link, such as `?play=true`, to start it right away. Shuffle works the same way.\n- **Icon menu**: press and hold the Spotify icon to like the current track, play a random pick, or start radio.\n- **Command line**: the `zefy` command controls playback, the queue, likes, playlists and a sleep timer.\n- **Free accounts**: built for accounts without Premium, so it avoids anything that needs it.\n\nWorks with Spotify 8.6.64 to 9.1.94 (including 8.9.8 and 9.0.48)."
         },
         {
           "class": "DepictionSeparatorView"
@@ -44,6 +44,15 @@
       "tabname": "Changelog",
       "class": "DepictionStackView",
       "views": [
+        {
+          "class": "DepictionSubheaderView",
+          "title": "1.0.1",
+          "useBoldText": true
+        },
+        {
+          "class": "DepictionMarkdownView",
+          "markdown": "- Quick Play leaves the play press of a paused video or podcast alone.\n- Resume works on iOS 14.\n- Play by name, Liked Songs, radio and random picks work with Spotify 9.0 and 8.x."
+        },
         {
           "class": "DepictionSubheaderView",
           "title": "1.0.0",

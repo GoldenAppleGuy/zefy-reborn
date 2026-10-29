@@ -246,6 +246,30 @@ static id contentItemForURI(NSString *uri) {
 }
 
 static void browseChildrenWith(NSString *parent, BOOL entityPages, NSString *locale, void (^completion)(id response, id error));
+// Spotify 9.0 asserts that a play request has an origin (9.1 accepts none), so every play call passes one.
+static id makePlayOrigin(NSString *viewURI) {
+    Class k = NSClassFromString(@"SPTPlayOrigin");
+    SEL init = NSSelectorFromString(@"initWithFeatureIdentifier:featureVersion:viewURI:externalReferrer:");
+    if (!k || !class_getInstanceMethod(k, init)) return nil;
+    return ((id (*)(id, SEL, id, id, id, id))objc_msgSend)([k alloc], init, @"external-integration", @"1.0", [NSURL URLWithString:viewURI ?: @"spotify:home"] ?: [NSURL URLWithString:@"spotify:home"], @"zefyreborn");
+}
+
+static id makeLoggingParams(void) {
+    Class k = NSClassFromString(@"SPTLoggingParams");
+    id p = k ? [[k alloc] init] : nil;
+    for (NSString *key in @[@"interactionId", @"commandId", @"pageInstanceId"]) {
+        SEL set = NSSelectorFromString([NSString stringWithFormat:@"set%@%@:", [[key substringToIndex:1] uppercaseString], [key substringFromIndex:1]]);
+        if ([p respondsToSelector:set]) ((void (*)(id, SEL, id))objc_msgSend)(p, set, NSUUID.UUID.UUIDString);
+    }
+    return p;
+}
+
+// The content browser answers with a response object (9.x) or, in 8.6, with the array of items itself.
+static NSArray *contentItems(id response) {
+    if ([response isKindOfClass:NSArray.class]) return response;
+    return [response respondsToSelector:@selector(items)] ? [response valueForKey:@"items"] : @[];
+}
+
 static void playItemEx(id c, id item, NSString *uri, BOOL shuffle, BOOL allowRetry);
 static void playItem(id c, id item, NSString *uri, BOOL shuffle) { playItemEx(c, item, uri, shuffle, YES); }
 
@@ -258,7 +282,7 @@ static void playItemEx(id c, id item, NSString *uri, BOOL shuffle, BOOL allowRet
         if (a && allowRetry && container) {
             SPLog(@"play refused, restarting %@ from its first track", uri);
             browseChildrenWith(uri, NO, nil, ^(id response, id error) {
-                NSArray *items = [response respondsToSelector:@selector(items)] ? [response valueForKey:@"items"] : nil;
+                NSArray *items = contentItems(response);
                 if (!items.firstObject) { SPLog(@"restart: no first track (%lu items)", (unsigned long)items.count); return; }
                 playItemEx(c, items.firstObject, uri, shuffle, NO);
             });
@@ -277,10 +301,10 @@ static void playItemEx(id c, id item, NSString *uri, BOOL shuffle, BOOL allowRet
     }
     if (item && [c respondsToSelector:@selector(playContent:withOptions:origin:loggingParams:completionHandler:)]) {
         SPLog(@"play item %@", uri);
-        ((void (*)(id, SEL, id, id, id, id, id))objc_msgSend)(c, @selector(playContent:withOptions:origin:loggingParams:completionHandler:), item, nil, nil, nil, done);
+        ((void (*)(id, SEL, id, id, id, id, id))objc_msgSend)(c, @selector(playContent:withOptions:origin:loggingParams:completionHandler:), item, nil, makePlayOrigin(uri), makeLoggingParams(), done);
     } else if ([c respondsToSelector:@selector(playContentWithURI:withOptions:origin:loggingParams:completionHandler:)]) {
         NSURL *u = [NSURL URLWithString:uri];   // Spotify bridges this argument to a Swift URL, so it must be an NSURL
-        ((void (*)(id, SEL, id, id, id, id, id))objc_msgSend)(c, @selector(playContentWithURI:withOptions:origin:loggingParams:completionHandler:), u, nil, nil, nil, done);
+        ((void (*)(id, SEL, id, id, id, id, id))objc_msgSend)(c, @selector(playContentWithURI:withOptions:origin:loggingParams:completionHandler:), u, nil, makePlayOrigin(uri), makeLoggingParams(), done);
     } else {
         SPLog(@"play: no URI play call in this Spotify version");
     }
@@ -460,6 +484,18 @@ static void dumpClass(Class c) {
 }
 
 static void runProbe(NSString *list) {
+    if ([list hasPrefix:@"classes:"]) {
+        NSString *needle = [list substringFromIndex:8];
+        unsigned n = 0;
+        Class *all = objc_copyClassList(&n);
+        for (unsigned i = 0; i < n; i++) {
+            const char *img = class_getImageName(all[i]);
+            if (img && strstr(img, "/Spotify.app/") && [NSStringFromClass(all[i]) rangeOfString:needle options:NSCaseInsensitiveSearch].location != NSNotFound)
+                SPLog(@"class %@", NSStringFromClass(all[i]));
+        }
+        free(all);
+        return;
+    }
     if ([list hasPrefix:@"class:"]) { for (NSString *cn in [[list substringFromIndex:6] componentsSeparatedByString:@","]) dumpClass(NSClassFromString(cn)); return; }
     if ([list isEqualToString:@"queue"]) {
         id c = findController();
@@ -561,15 +597,43 @@ static void browseChildrenWith(NSString *parent, BOOL entityPages, NSString *loc
     id cc = findInstance(kContentClass);
     if (!cc) { SPLog(@"browse: no content controller"); completion(nil, nil); return; }
     // Other Spotify versions name or shape these calls differently; skip quietly instead of crashing the app.
-    SEL makeOptions = @selector(makeContentRequestOptions:offlineOnly:enableEntityPages:debugLogTags:spacesLocaleOverride:libraryCollectionRootFormat:browseGenreFormat:overrideRecentlyPlayedPlaceholder:synchronize:libraryContentPreferences:);
-    if (![cc respondsToSelector:makeOptions] || ![cc respondsToSelector:@selector(canResolveChildContentWithParentURI:)] || ![cc respondsToSelector:@selector(resolveChildContentOfParentWithURI:options:requestOrigin:withCompletionHandler:)]) {
+    // The option builder's name differs in every Spotify version (the tail after enableEntityPages: changes). The
+    // versions checked so far are called with their exact argument lists; for an unknown one, the method with the
+    // longest name that starts the same way is called with the leading arguments, which are plain registers.
+    NSString *head = @"makeContentRequestOptions:offlineOnly:enableEntityPages:debugLogTags:spacesLocaleOverride:libraryCollectionRootFormat:browseGenreFormat:overrideRecentlyPlayedPlaceholder:synchronize:";
+    SEL makeNew = NSSelectorFromString([head stringByAppendingString:@"libraryContentPreferences:"]);   // 9.1
+    SEL makeTags = NSSelectorFromString([head stringByAppendingString:@"tags:"]);                        // 9.0
+    SEL makeShort = NSSelectorFromString(head);                                                           // 9.0, shorter
+    SEL makeLiked = NSSelectorFromString(@"makeContentRequestOptions:offlineOnly:enableEntityPages:debugLogTags:spacesLocaleOverride:likedSongsInPlayLists:");   // 8.6
+    SEL resolve = @selector(resolveChildContentOfParentWithURI:options:requestOrigin:withCompletionHandler:);
+    SEL makeSel = NULL;
+    for (NSValue *v in @[[NSValue valueWithPointer:makeNew], [NSValue valueWithPointer:makeTags], [NSValue valueWithPointer:makeShort], [NSValue valueWithPointer:makeLiked]]) {
+        if ([cc respondsToSelector:v.pointerValue]) { makeSel = v.pointerValue; break; }
+    }
+    BOOL known = makeSel != NULL;
+    if (!makeSel) {
+        unsigned methodCount = 0;
+        Method *methods = class_copyMethodList(object_getClass(cc), &methodCount);
+        for (unsigned i = 0; i < methodCount; i++) {
+            NSString *name = NSStringFromSelector(method_getName(methods[i]));
+            if ([name hasPrefix:@"makeContentRequestOptions:offlineOnly:enableEntityPages:"] && (!makeSel || name.length > NSStringFromSelector(makeSel).length)) makeSel = method_getName(methods[i]);
+        }
+        free(methods);
+    }
+    if (!makeSel || ![cc respondsToSelector:@selector(canResolveChildContentWithParentURI:)] || ![cc respondsToSelector:resolve]) {
         SPLog(@"browse: this Spotify version has no content browser API");
         completion(nil, nil);
         return;
     }
-    id opts = ((id (*)(id, SEL, unsigned long long, BOOL, BOOL, id, id, long long, long long, BOOL, BOOL, id))objc_msgSend)(
-        cc, @selector(makeContentRequestOptions:offlineOnly:enableEntityPages:debugLogTags:spacesLocaleOverride:libraryCollectionRootFormat:browseGenreFormat:overrideRecentlyPlayedPlaceholder:synchronize:libraryContentPreferences:),
-        100, NO, entityPages, nil, locale, 0, 0, NO, NO, nil);
+    if (!known) SPLog(@"browse: unknown option builder %@", NSStringFromSelector(makeSel));
+    id opts;
+    if (makeSel == makeShort) {
+        opts = ((id (*)(id, SEL, unsigned long long, BOOL, BOOL, id, id, long long, long long, BOOL, BOOL))objc_msgSend)(cc, makeSel, 100, NO, entityPages, nil, locale, 0, 0, NO, NO);
+    } else if (makeSel == makeLiked) {
+        opts = ((id (*)(id, SEL, unsigned long long, BOOL, BOOL, id, id, BOOL))objc_msgSend)(cc, makeSel, 100, NO, entityPages, nil, locale, NO);
+    } else {
+        opts = ((id (*)(id, SEL, unsigned long long, BOOL, BOOL, id, id, long long, long long, BOOL, BOOL, id))objc_msgSend)(cc, makeSel, 100, NO, entityPages, nil, locale, 0, 0, NO, NO, nil);
+    }
     BOOL can = ((BOOL (*)(id, SEL, id))objc_msgSend)(cc, @selector(canResolveChildContentWithParentURI:), [NSURL URLWithString:parent]);
     SPLog(@"browse %@ canResolve=%d options %@", parent, can, opts ? NSStringFromClass(object_getClass(opts)) : @"nil");
     void (^done)(id, id) = ^(id response, id error) { completion(response, error); };
@@ -584,10 +648,10 @@ static void playRandom(NSString *source) {
     NSString *parent = parents[source];
     if (!parent) { SPLog(@"random: unknown source %@", source); return; }
     browseChildrenWith(parent, NO, nil, ^(id response, id error) {
-        NSArray *items = [response respondsToSelector:@selector(items)] ? [response valueForKey:@"items"] : nil;
+        NSArray *items = contentItems(response);
         NSMutableArray *playable = [NSMutableArray array];
         for (id item in items) {
-            NSString *uri = [[item valueForKey:@"URI"] description];
+            NSString *uri = playableURI([[item valueForKey:@"URI"] description]);
             if ([uri hasPrefix:@"spotify:playlist:"] || [uri hasPrefix:@"spotify:album:"] || [uri hasPrefix:@"spotify:artist:"]) [playable addObject:item];
         }
         if (!playable.count) { SPLog(@"random %@: nothing to pick (%lu items, error %@)", source, (unsigned long)items.count, error); return; }
@@ -601,7 +665,7 @@ static void playRandom(NSString *source) {
         id c = findController();
         NSString *pickURI = [[pick valueForKey:@"URI"] description];
         if ([pickURI containsString:@":collection:artist:"]) startPlayback(playableURI(pickURI), NO);
-        else if (c) playItem(c, pick, pickURI, NO);
+        else if (c) playItem(c, pick, playableURI(pickURI), NO);
     });
 }
 
@@ -641,7 +705,7 @@ static void browseChildrenWith(NSString *parent, BOOL entityPages, NSString *loc
 static void collectItems(NSArray *parents, NSUInteger index, NSMutableArray *found, void (^done)(NSArray *)) {
     if (index >= parents.count) { done(found); return; }
     browseChildrenWith(parents[index], NO, nil, ^(id response, id error) {
-        for (id item in [response respondsToSelector:@selector(items)] ? [response valueForKey:@"items"] : @[]) [found addObject:item];
+        for (id item in contentItems(response)) [found addObject:item];
         collectItems(parents, index + 1, found, done);
     });
 }
@@ -650,7 +714,11 @@ static void collectItems(NSArray *parents, NSUInteger index, NSMutableArray *fou
 // artist's own URI can.
 static NSString *playableURI(NSString *uri) {
     NSRange r = [uri rangeOfString:@":collection:artist:"];
-    return r.location == NSNotFound ? uri : [@"spotify:artist:" stringByAppendingString:[uri substringFromIndex:NSMaxRange(r)]];
+    if (r.location != NSNotFound) return [@"spotify:artist:" stringByAppendingString:[uri substringFromIndex:NSMaxRange(r)]];
+    // Spotify 8.6 lists saved albums as spotify:user:<name>:collection:album:<id>.
+    r = [uri rangeOfString:@":collection:album:"];
+    if (r.location != NSNotFound) return [@"spotify:album:" stringByAppendingString:[uri substringFromIndex:NSMaxRange(r)]];
+    return uri;
 }
 
 static void playByName(NSString *kind, NSString *query) {
@@ -672,7 +740,7 @@ static void playByName(NSString *kind, NSString *query) {
         SPLog(@"by name %@: %@ (%d)", query, [best valueForKey:@"title"], bestScore);
         writeResult([NSString stringWithFormat:@"Playing %@%@", [best valueForKey:@"title"], subtitle.length && ![subtitle isEqualToString:@"(null)"] ? [@" - " stringByAppendingString:subtitle] : @""]);
         if ([uri containsString:@":collection:artist:"]) startPlayback(playableURI(uri), NO);
-        else playItem(c, best, uri, NO);
+        else playItem(c, best, playableURI(uri), NO);
     });
 }
 
@@ -694,7 +762,7 @@ static void runCommandLineUnsafe(NSString *line) {
         // Debug: start a URI directly, without the tweak's own handling.
         id c = findController();
         void (^done)(void *, void *) = ^(void *a, void *b) { SPLog(@"playraw finished (%p %p)", a, b); };
-        if (c) ((void (*)(id, SEL, id, id, id, id, id))objc_msgSend)(c, @selector(playContentWithURI:withOptions:origin:loggingParams:completionHandler:), [NSURL URLWithString:arg], nil, nil, nil, done);
+        if (c) ((void (*)(id, SEL, id, id, id, id, id))objc_msgSend)(c, @selector(playContentWithURI:withOptions:origin:loggingParams:completionHandler:), [NSURL URLWithString:arg], nil, makePlayOrigin(arg), makeLoggingParams(), done);
         return;
     }
     if ([name isEqualToString:@"playcontent"]) {
@@ -702,12 +770,12 @@ static void runCommandLineUnsafe(NSString *line) {
         NSArray *parts = [arg componentsSeparatedByString:@" "];
         NSUInteger index = parts.count > 1 ? (NSUInteger)[parts[1] integerValue] : 0;
         browseChildrenWith(parts[0], NO, nil, ^(id response, id error) {
-            NSArray *items = [response respondsToSelector:@selector(items)] ? [response valueForKey:@"items"] : nil;
+            NSArray *items = contentItems(response);
             if (index >= items.count) { SPLog(@"playcontent: no item %lu of %lu", (unsigned long)index, (unsigned long)items.count); return; }
             id item = items[index], c = findController();
             SPLog(@"playcontent: %@ (%@)", [item valueForKey:@"title"], [item valueForKey:@"URI"]);
             void (^done)(void *, void *) = ^(void *a, void *b) { SPLog(@"playcontent finished (%p %p)", a, b); };
-            ((void (*)(id, SEL, id, id, id, id, id))objc_msgSend)(c, @selector(playContent:withOptions:origin:loggingParams:completionHandler:), item, nil, nil, nil, done);
+            ((void (*)(id, SEL, id, id, id, id, id))objc_msgSend)(c, @selector(playContent:withOptions:origin:loggingParams:completionHandler:), item, nil, makePlayOrigin(parts[0]), makeLoggingParams(), done);
         });
         return;
     }
@@ -716,7 +784,7 @@ static void runCommandLineUnsafe(NSString *line) {
         id opts = ((id (*)(id, SEL, unsigned long long, BOOL, BOOL, id, id, long long, long long, BOOL, BOOL, id))objc_msgSend)(
             cc, @selector(makeContentRequestOptions:offlineOnly:enableEntityPages:debugLogTags:spacesLocaleOverride:libraryCollectionRootFormat:browseGenreFormat:overrideRecentlyPlayedPlaceholder:synchronize:libraryContentPreferences:), 100, NO, NO, nil, nil, 0, 0, NO, NO, nil);
         void (^done)(id, id) = ^(id response, id error) {
-            NSArray *items = [response respondsToSelector:@selector(items)] ? [response valueForKey:@"items"] : nil;
+            NSArray *items = contentItems(response);
             SPLog(@"resolve result: %lu items, error %@", (unsigned long)items.count, error);
             for (id item in items) SPLog(@"resolved | %@ | %@ | %@ | context=%@ skipTo=%@", [item valueForKey:@"title"], [item valueForKey:@"subtitle"], [item valueForKey:@"URI"], [item valueForKey:@"contextURI"], [item valueForKey:@"skipToTrack"]);
         };
@@ -736,7 +804,7 @@ static void runCommandLineUnsafe(NSString *line) {
             SPLog(@"browse result: %@ / error %@", response ? NSStringFromClass(object_getClass(response)) : @"nil", error);
             NSString *d = [response description] ?: @"";
             SPLog(@"%@", d.length > 6000 ? [d substringToIndex:6000] : d);
-            NSArray *items = [response respondsToSelector:@selector(items)] ? [response valueForKey:@"items"] : nil;
+            NSArray *items = contentItems(response);
             SPLog(@"items: %lu", (unsigned long)items.count);
             for (id item in [items subarrayWithRange:NSMakeRange(0, MIN(items.count, 40))])
                 SPLog(@"item | %@ | %@ | %@ | container=%@ children=%lu context=%@ skipTo=%@ view=%@ image=%@ icon=%@", [item valueForKey:@"title"], [item valueForKey:@"subtitle"], [item valueForKey:@"URI"], [item valueForKey:@"isContainer"], (unsigned long)[[item valueForKey:@"children"] count], [item valueForKey:@"contextURI"], [item valueForKey:@"skipToTrack"], [item valueForKey:@"viewURI"], [item valueForKey:@"imageURI"], [item valueForKey:@"placeholderIcon"]);
@@ -746,7 +814,7 @@ static void runCommandLineUnsafe(NSString *line) {
     if ([name isEqualToString:@"likedsongs"]) {
         // Liked Songs is listed in the library like a playlist, with its own URI.
         browseChildrenWith(@"spotify:playlists", NO, nil, ^(id response, id error) {
-            for (id item in [response respondsToSelector:@selector(items)] ? [response valueForKey:@"items"] : @[]) {
+            for (id item in contentItems(response)) {
                 if ([[item valueForKey:@"title"] isEqualToString:@"Liked Songs"]) { startPlayback([[item valueForKey:@"URI"] description], NO); return; }
             }
             SPLog(@"liked songs: not found in the library list (error %@)", error);
@@ -840,7 +908,7 @@ static void writeRecents(void) {
     browseChildrenWith(@"spotify:recently-played", NO, nil, ^(id response, id error) {
       @try {
         NSMutableString *text = [NSMutableString string];
-        for (id item in [response respondsToSelector:@selector(items)] ? [response valueForKey:@"items"] : @[]) {
+        for (id item in contentItems(response)) {
             NSString *uri = [[item valueForKey:@"URI"] description];
             if (![uri hasPrefix:@"spotify:playlist:"] && ![uri hasPrefix:@"spotify:album:"] && ![uri hasPrefix:@"spotify:artist:"]) continue;
             NSString *(^clean)(id) = ^NSString *(id v) { NSString *t = v ? [v description] : @""; return [[t stringByReplacingOccurrencesOfString:@"\t" withString:@" "] stringByReplacingOccurrencesOfString:@"\n" withString:@" "]; };
@@ -965,6 +1033,13 @@ static void startSpotifySide(void) {
         }
         free(list);
         installPlayerObserver();
+        // A background launch (Quick Play) can be suspended again before the waiting command is read, which left it
+        // unanswered on iOS 14. A background task keeps the app running for a short while.
+        UIApplication *app = UIApplication.sharedApplication;
+        __block UIBackgroundTaskIdentifier hold = UIBackgroundTaskInvalid;
+        void (^release)(void) = ^{ if (hold != UIBackgroundTaskInvalid) { [app endBackgroundTask:hold]; hold = UIBackgroundTaskInvalid; } };
+        hold = [app beginBackgroundTaskWithName:@"zefyreborn" expirationHandler:release];
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(15.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), release);
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(8.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ writeRecents(); });
         watchCommandFile();
         // The first check comes quickly: a Quick Play or link request is usually already waiting when Spotify starts.
@@ -976,7 +1051,7 @@ static void startSpotifySide(void) {
 // ---- SpringBoard: Quick Play --------------------------------------------------------------------------------
 // Control Center, the lock screen and headsets send play through MRMediaRemoteSendCommandToPlayerWithResult
 // (command 0 play, 1 pause, 2 toggle). When Quick Play is on, nothing is playing and the command would go to
-// another player, the command is dropped and Spotify is started instead.
+// Apple's Music app (or to no app), the command is dropped and Spotify is started instead.
 
 @interface SBMediaController : NSObject
 + (instancetype)sharedInstance;
@@ -1091,7 +1166,10 @@ static BOOL shouldRedirect(long cmd) {
         id app = [mc nowPlayingApplication];
         NSString *bid = [app respondsToSelector:NSSelectorFromString(@"bundleIdentifier")] ? [app valueForKey:@"bundleIdentifier"] : nil;
         SPLog(@"play press cmd=%ld playing=%d nowPlaying=%@", cmd, playing, bid);
-        redirect = !playing && ![bid isEqualToString:kSpotifyID];
+        // Only take over when nothing owns the media session or Apple's Music app does (the default player). A paused
+        // session from another app (a video, a podcast) keeps its own play press.
+        BOOL appleDefault = !bid.length || [bid isEqualToString:@"com.apple.Music"] || [bid isEqualToString:@"com.apple.mobileipod"];
+        redirect = !playing && appleDefault;
     };
     if (pthread_main_np()) {
         decide();
@@ -1107,6 +1185,7 @@ static BOOL shouldRedirect(long cmd) {
 }
 
 static long hook_sendToPlayer(long cmd, long a, long b, long c, long d, long e) {
+    if (cmd != 0 && cmd != 2) SPLog(@"media command %ld", cmd);
     if ((cmd == 0 || cmd == 2) && prefBool(@"enabled", YES) && prefBool(@"quickPlay", NO) && shouldRedirect(cmd)) {
         SPLog(@"quick play: redirecting to Spotify");
         dispatch_async(dispatch_get_main_queue(), ^{ quickPlay(); showStartingFeedback(); });

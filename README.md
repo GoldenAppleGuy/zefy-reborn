@@ -64,7 +64,7 @@ The Spotify-side code calls internal Spotify methods that were found in 9.1.94 (
 
 On iOS 15 the `mobile` user cannot list or write an app's data folder (Operation not permitted), so `zefy` cannot hand requests to Spotify through a file there. When it cannot find the folder, it sends the request to SpringBoard instead (through `/var/jb/tmp/zefyreborn.sbcmd`, the channel the sleep timer uses), and SpringBoard, which can write into the folder, passes it on: `relay <line>` for a command, `relay-wait <line>` for one that answers (it waits for Spotify's reply file and returns it), and `nowplaying` for the status file. On iOS 17 the command still writes the file itself. In relay mode Spotify is started in the background by SpringBoard, so a link or control does not bring Spotify to the front.
 
-What works depends on the Spotify version. Tested: 9.1.94 on iOS 17.0 (everything), 9.0.48 on iOS 15.4.1 and 8.6.64 on iOS 14.3. On 9.0.48 the controls, status and sleep timer work, but play by name, random picks and the recents file need the content browser, which that version does not have, so they report "No match" or do nothing. Spotify 8.6.64 was checked for Quick Play and the basic controls only.
+Tested: 9.1.94 on iOS 17.0, 9.0.48 on iOS 15.4.1, and 8.6.64 and 8.9.8 on iOS 14.3. The library commands (by name, Liked Songs, radio, random picks, my playlist) work on all three. Spotify changed the content browser between versions: the option builder has a different name in each (9.1 `...libraryContentPreferences:`, 9.0 `...tags:`, 8.6 `...likedSongsInPlayLists:`, 8.9 none of those; an unknown one is found by its common prefix), 8.6 returns the list of items itself instead of a response object, and saved albums are listed as `spotify:user:<name>:collection:album:<id>` there. 9.0 asserts that a play request carries a play origin and logging parameters, so every play call passes both.
 
 ## Debug
 
@@ -102,9 +102,9 @@ Commands that answer (play by name, status) work through a reply file: the comma
 
 ## Quick Play
 
-A play press from Control Center (or any source that sends the MediaRemote play command) with nothing playing resumes Spotify instead of going to another player. Off by default; switch it on in Settings under Zefy Reborn. An Enabled switch there turns off all of the tweak's behaviour.
+A play press from Control Center (or any source that sends the MediaRemote play command) with nothing playing resumes Spotify instead of going to Apple's Music app. A paused session from another app, such as a video or a podcast, keeps its own play press. Off by default; switch it on in Settings under Zefy Reborn. An Enabled switch there turns off all of the tweak's behaviour.
 
-SpringBoard hooks `MRMediaRemoteSendCommandToPlayerWithResult` (command 0 play, 2 toggle). If nothing is playing and Spotify is not the now-playing app, it drops the command, writes `zefyreborn:resume` to the same command file `zefy` uses, and launches Spotify in the background with FBSSystemService. Spotify finds its playback controller and calls `resumeWithCompletionHandler:`. The press can arrive on any thread, so the media state is read on the main thread with a 0.3 s timeout; if it does not answer, the press passes through.
+SpringBoard hooks `MRMediaRemoteSendCommandToPlayerWithResult` (command 0 play, 2 toggle). If nothing is playing and no app, or Apple's Music app, is the now-playing app, it drops the command, writes `zefyreborn:resume` to the same command file `zefy` uses, and launches Spotify in the background with FBSSystemService. Spotify finds its playback controller and calls `resumeWithCompletionHandler:`. The press can arrive on any thread, so the media state is read on the main thread with a 0.3 s timeout; if it does not answer, the press passes through.
 
 ## How it works
 
@@ -135,7 +135,7 @@ The tweak finds the jailbreak's folder from where it was loaded, and the `zefy` 
 |---|---|
 | iOS 15.4.1, rootless, device | all features |
 | iOS 17.0, rootless, device | all features |
-| iOS 14.3, rootful, device (Spotify 8.6.64) | Quick Play with the "Starting" text, the command's play, pause, skip, shuffle, like and queue |
+| iOS 14.3, rootful, device (Spotify 8.6.64 and 8.9.8) | Quick Play with the "Starting" text, the command's play, pause, skip, shuffle, like, queue and the library commands |
 | roothide | builds, not run on a device |
 
 On iOS 14 there is no `MRMediaRemoteSendCommandToPlayerWithResult`, so Quick Play hooks `MRMediaRemoteSendCommandToPlayer` instead. Spotify 8.6.64 drops a resume sent before its player has loaded, so a resume that gets no answer is sent again.
