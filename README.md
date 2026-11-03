@@ -1,35 +1,55 @@
 # Zefy Reborn
 
-Tweak for rootless, roothide and rootful jailbreaks (iOS 14 to 17) that makes Spotify behave like the default music player (inspired by Zefy). Formerly called SpotifyURLPlay; its command is now `zefy`. Links that carry a play flag start playback instead of only opening the page.
+Tweak for rootless, roothide and rootful jailbreaks (iOS 14 to 17) that makes Spotify behave like the default music player (inspired by Zefy). Formerly called SpotifyURLPlay; its command is now `zefy`. Links that carry a play flag start playback; other links open the page.
+
+## Quick start
+
+Run these on the phone as `mobile`:
+
+```
+zefy "https://open.spotify.com/album/<id>?play=true"   play an album
+zefy "https://open.spotify.com/album/<id>"             open the album page, no playback
+zefy -n "<link>"                                       open the page, no playback
+zefy -s 0                                              turn shuffle off
+zefy --status                                          show what is playing
+```
+
+`spotify:` links need an app that opens them, such as a Shortcut with the Open URLs action.
+
+## Links
 
 | Link | Effect |
 |---|---|
+| `https://open.spotify.com/<type>/<id>` | opens the page, no playback |
 | `https://open.spotify.com/<type>/<id>?play=true` | opens and plays |
 | `https://open.spotify.com/<type>/<id>?shuffle=true` | plays and turns shuffle on |
 | `spotify:<type>:<id>:play` | opens and plays |
 | `spotify:<type>:<id>?play=true` | opens and plays |
 
-`<type>` is `playlist`, `album`, `track`, `artist`, `show` or `episode`. Links without a flag behave as before.
+`<type>` is `playlist`, `album`, `track`, `artist`, `show` or `episode`.
 
-Tested on iOS 17.0 with Spotify 9.1.94 on a free account (and on older Spotify versions, listed below): playlists, albums and tracks all start. Free accounts play playlists and albums shuffled, whatever the flag says.
+Playback follows Spotify's current shuffle setting. If shuffle is on, an album or playlist starts on a random track. Run `zefy -s 0` first to play it in order; this worked on the iOS 15 phone below with Spotify 8.9.68. Spotify can refuse this on some accounts, especially free mobile; the debug log shows when it does.
 
-`spotify:` links need an app that opens them, such as a Shortcut with the Open URLs action.
+When an open-only link arrives while Spotify is closed, iOS 15 starts it in the background, so the page may not come to the screen. Open Spotify first if you want to see it.
+
+Tested on iOS 17.0 with Spotify 9.1.94 on a free account (and on the older Spotify versions listed below): playlists, albums and tracks all start.
 
 ## From the terminal
 
 ```
 zefy <link>             open a spotify: or open.spotify.com link (plays only with a play flag)
 zefy -n <link>          open the page without playing
-zefy -s [0|1|2]         shuffle: 0 off, 1 on (default), 2 toggle
-zefy -r [0|1|2]         repeat: 0 off, 1 track (default), 2 playlist
+zefy -h                 show the command summary
+zefy -s [0|1|2]         shuffle: 0 off, 1 on, 2 toggle (no value = 1)
+zefy -r [0|1|2]         repeat: 0 off, 1 track, 2 playlist (no value = 1)
 zefy --next | --prev    skip
 zefy --pause | --resume
 zefy --seek <seconds>   move the position, negative goes back
 zefy --queue <uri>      add a track to the queue
-zefy -k [0|1|2]         like the playing track: 0 unlike, 1 like (default), 2 toggle
-zefy -a <playlist>      add the playing track to a playlist
-zefy -d <playlist>      remove the playing track from a playlist
-zefy --setmyplaylist <playlist>
+zefy -k [0|1|2]         like the playing track: 0 unlike, 1 like, 2 toggle (no value = 1)
+zefy -a <playlist-uri>  add the playing track to a playlist
+zefy -d <playlist-uri>  remove the playing track from a playlist
+zefy --setmyplaylist <playlist-uri>
 zefy --myplaylist | --addtomyplaylist | --removefrommyplaylist
 zefy --radio [uri]      radio from a track, album, artist or playlist; none = the playing track
 zefy --likedsongs       play Liked Songs
@@ -44,13 +64,27 @@ zefy --randomlibrary    play a random playlist from your library
 zefy --randomalbum      play a random saved album
 ```
 
+Names with spaces need quotes, for example `zefy --album "abbey road"`. The `-a`, `-d` and `--setmyplaylist` options take a playlist URI (`spotify:playlist:<id>`), not a name.
+
+`zefy -s 0` before a play link is the way to keep an album or playlist in order. Spotify may refuse the shuffle change on some accounts; the debug log shows when it does.
+
 Adding to or removing from a playlist checks first and only changes what needs changing, so repeating a command is safe. The saved playlist for the `--myplaylist` options is kept in the tweak's preferences. The random picks and `--likedsongs` read the same lists Spotify shows for CarPlay (`spotify:recently-played`, `spotify:playlists`, `spotify:collection:albums`) through its content controller. Home, Daily Mixes and "made for you" are not available this way: resolving `spotify:home` fails with a Home provider error on a free account.
 
 Run it as `mobile`. Nothing shows the "Open in Spotify" prompt, and a link works even when Spotify is not running. `uiopen --url` shows that prompt, and `uiopen --bundleid` drops the URL, which is why the command passes the request to the tweak through a file instead: `zefy` writes `zefyreborn.cmd` in Spotify's Documents folder; the tweak watches that folder, and checks once after launch.
 
-The controls call the same playback controller Spotify uses for CarPlay. Spotify decides what an account may do: on a free account the debug log shows a refusal for shuffle off, repeat track, seek and previous, and the call has no effect.
+The controls call the same playback controller Spotify uses for CarPlay. Spotify decides what an account may do. If a control is refused, the debug log says so and the call has no effect; some free accounts refuse shuffle off, repeat track, seek and previous.
 
-## Settings the Spotify app can read
+## Settings
+
+| Setting | Effect | Default |
+|---|---|---|
+| Enabled | Turns all tweak behaviour on or off | On |
+| Quick Play | A play press with nothing playing starts Spotify | Off |
+| Quick Actions | Adds Spotify shortcuts to the icon menu | On |
+| Control Center Recents | Shows Spotify recents in Control Center | On |
+| Clean Relaunch | Lets Spotify close and relaunch for more reliable audio | Off |
+
+### How the Spotify app reads settings
 
 The Spotify app is sandboxed and cannot read the tweak's preferences, so SpringBoard and the `zefy` command copy the Enabled value into `zefyreborn.settings` in Spotify's Documents folder, which the app reads. The pane posts `com.goldenappleguy.zefyreborn.prefschanged` when the switch changes, and SpringBoard rewrites the file.
 
@@ -66,9 +100,9 @@ On iOS 15 the `mobile` user cannot list or write an app's data folder (Operation
 
 Tested: 9.1.94 on iOS 17.0, 9.0.48 on iOS 15.4.1, and 8.6.64 and 8.9.8 on iOS 14.3. The library commands (by name, Liked Songs, radio, random picks, my playlist) work on all three. Spotify changed the content browser between versions: the option builder has a different name in each (9.1 `...libraryContentPreferences:`, 9.0 `...tags:`, 8.6 `...likedSongsInPlayLists:`, 8.9 none of those; an unknown one is found by its common prefix), 8.6 returns the list of items itself instead of a response object, and saved albums are listed as `spotify:user:<name>:collection:album:<id>` there. 9.0 asserts that a play request carries a play origin and logging parameters, so every play call passes both.
 
-## Debug
+## Debug log
 
-Create an empty `zefyreborn.debug` in Spotify's Documents folder (and `/var/jb/tmp/zefyreborn.debug` for SpringBoard) to turn on the log. The `probe`, `browse`, `resolve`, `playcontent`, `playraw` and `instances` commands, and SpringBoard's `probe-classes`, `probe-class`, `probe-ivars`, `spotify-debug on|off` (creates or removes Spotify's debug flag from SpringBoard) and `spotify-log [lines]` (returns the end of Spotify's log), only work while that flag exists. The last two exist for iOS 15, where the shell cannot read Spotify's folder. They exist for researching Spotify and iOS internals and can log your library, so they stay out of normal use.
+Off by default. Create an empty `zefyreborn.debug` in Spotify's Documents folder (and `/var/jb/tmp/zefyreborn.debug` for SpringBoard) to turn on the log; the logs are `zefyreborn.log` beside each flag. The `probe`, `browse`, `resolve`, `playcontent`, `playraw` and `instances` commands, and SpringBoard's `probe-classes`, `probe-class`, `probe-ivars`, `spotify-debug on|off` (creates or removes Spotify's debug flag from SpringBoard) and `spotify-log [lines]` (returns the end of Spotify's log), only work while that flag exists. The last two exist for iOS 15, where the shell cannot read Spotify's folder. They exist for researching Spotify and iOS internals and can log your library, so they stay out of normal use.
 
 ## Control Center recents
 
@@ -116,10 +150,6 @@ Spotify is scene-based, so links reach `scene:openURLContexts:`, `scene:willConn
 - Shuffle is turned on with `enableShuffleWithCompletionHandler:` 1.5 s after playback starts.
 
 Class and selector names come from Spotify 9.1.94 and may change in other versions.
-
-## Debug log
-
-Off by default. Create an empty file named `zefyreborn.debug` in Spotify's Documents folder (inside its data container); the log is `zefyreborn.log` beside it. For the SpringBoard part the flag and log are `/var/jb/tmp/zefyreborn.debug` and `/var/jb/tmp/zefyreborn.log`.
 
 ## Jailbreak types
 
