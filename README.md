@@ -18,7 +18,7 @@ Tested on iOS 17.0 with Spotify 9.1.94 on a free account (and on older Spotify v
 ## From the terminal
 
 ```
-zefy <link>             play a spotify: or open.spotify.com link
+zefy <link>             open a spotify: or open.spotify.com link (plays only with a play flag)
 zefy -n <link>          open the page without playing
 zefy -s [0|1|2]         shuffle: 0 off, 1 on (default), 2 toggle
 zefy -r [0|1|2]         repeat: 0 off, 1 track (default), 2 playlist
@@ -82,7 +82,7 @@ Starting Spotify from nothing takes a few seconds. After a redirected Control Ce
 
 ## Starting playback reliably
 
-Waking a Spotify that is suspended in the background often loses the audio a moment after it starts, while a fresh launch and a foreground resume are reliable (4 of 4 each, against about half for a suspended wake). So when a request starts playback (Quick Play, a resume, a link, play by name, random, radio, Liked Songs), nothing is playing, and Spotify is still running, SpringBoard finds its process by name, closes it, and launches it clean half a second later. A resume that Spotify refuses is retried, up to three times. (A retry for "stopped right after resuming" was tried and removed: with the clean launch it was never needed, six of six trials held without it, and it fought a pause by the user. The log still notes a stop within 0.8 s of starting.) `zefy` sends its requests through SpringBoard whenever SpringBoard answers a `ping`, because a plain file cannot wake a suspended Spotify; the file is the fallback.
+Waking a Spotify that is suspended in the background often loses the audio a moment after it starts, while a fresh launch and a foreground resume are reliable (4 of 4 each, against about half for a suspended wake). With Clean Relaunch on (Settings > Zefy Reborn, off by default), when a request starts playback (Quick Play, a resume, a link, play by name, random, radio, Liked Songs), nothing is playing, Spotify is still running, and it is not the frontmost app, SpringBoard finds its process by name, closes it, and launches it clean half a second later. A running Spotify that is frontmost is handed the request instead, so it does not vanish under the user. With the switch off, the request is always handed to the running app, so Spotify never closes. A resume that Spotify refuses is retried, up to three times. (A retry for "stopped right after resuming" was tried and removed: with the clean launch it was never needed, six of six trials held without it, and it fought a pause by the user. The log still notes a stop within 0.8 s of starting.) `zefy` sends its requests through SpringBoard whenever SpringBoard answers a `ping`, because a plain file cannot wake a suspended Spotify; the file is the fallback.
 
 ## Quick Actions
 

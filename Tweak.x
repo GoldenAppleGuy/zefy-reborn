@@ -845,7 +845,10 @@ static void checkCommandFile(void) {
     if (![link hasPrefix:@"zefyreborn:"] && !prefBool(@"enabled", YES)) return;
     if ([link isEqualToString:kResumeCommand]) { if (prefBool(@"enabled", YES)) { gResumeTries = 0; resumePlayback(0); } return; }
     if ([link hasPrefix:kCommandPrefix]) { if (prefBool(@"enabled", YES)) runCommandLine(link); return; }
-    handleLink([NSURL URLWithString:link]);
+    NSURL *url = [NSURL URLWithString:link];
+    BOOL shuffle;
+    if (parseLink(url, &shuffle)) handleLink(url);
+    else navigateTo(link);   // a plain link opens the page without playing
 }
 
 static dispatch_source_t gWatch;   // must stay referenced or the watch is cancelled
@@ -1101,17 +1104,25 @@ static void sendSpotifyCommand(NSString *line) { sendSpotifyCommandEx(line, YES)
 - (id)applicationWithBundleIdentifier:(NSString *)bundleIdentifier;
 @end
 
-// The app the user is looking at, from SpringBoardServices. sysctl cannot tell foreground from suspended on iOS 15.
-// A nil answer (no app frontmost, e.g. the lock screen) counts as not looking at Spotify.
-static NSString *frontmostApplicationID(void) {
-    static CFStringRef (*fn)(void);
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{
-        void *sb = dlopen("/System/Library/PrivateFrameworks/SpringBoardServices.framework/SpringBoardServices", RTLD_NOW);
-        fn = sb ? dlsym(sb, "SBSCopyFrontmostApplicationDisplayIdentifier") : NULL;
-    });
-    if (!fn) return nil;
-    return (__bridge_transfer NSString *)fn();
+// The scene state lives in SpringBoard itself, so no IPC call (a synchronous one froze SpringBoard on its main
+// queue). A nil scene, an unknown one or an error counts as backgrounded.
+static BOOL spotifySceneForeground(void) {
+    Class controllerClass = NSClassFromString(@"SBApplicationController");
+    SEL shared = NSSelectorFromString(@"sharedInstance");
+    SEL application = NSSelectorFromString(@"applicationWithBundleIdentifier:");
+    SEL mainScene = NSSelectorFromString(@"mainScene");
+    SEL settings = NSSelectorFromString(@"settings");
+    SEL isBackgrounded = NSSelectorFromString(@"isBackgrounded");
+    if (!controllerClass || ![controllerClass respondsToSelector:shared]) return NO;
+    id controller = ((id (*)(id, SEL))objc_msgSend)(controllerClass, shared);
+    if (!controller || ![controller respondsToSelector:application]) return NO;
+    id app = ((id (*)(id, SEL, id))objc_msgSend)(controller, application, kSpotifyID);
+    if (!app || ![app respondsToSelector:mainScene]) return NO;
+    id scene = ((id (*)(id, SEL))objc_msgSend)(app, mainScene);
+    if (!scene || ![scene respondsToSelector:settings]) return NO;
+    id state = ((id (*)(id, SEL))objc_msgSend)(scene, settings);
+    if (!state || ![state respondsToSelector:isBackgrounded]) return NO;
+    return !((BOOL (*)(id, SEL))objc_msgSend)(state, isBackgrounded);
 }
 
 static BOOL commandStartsPlayback(NSString *line) {
@@ -1148,7 +1159,9 @@ static void sendSpotifyCommandEx(NSString *line, BOOL launch) {
         pid_t pid = spotifyPID();
         id mc = NSClassFromString(@"SBMediaController") ? [NSClassFromString(@"SBMediaController") sharedInstance] : nil;
         if (pid > 1 && ![mc isPlaying]) {
-            if ([frontmostApplicationID() isEqualToString:kSpotifyID]) {
+            if (!prefBool(@"cleanRelaunch", NO)) {
+                SPLog(@"Spotify is running but not playing (pid %d): Clean Relaunch is off, handing the request over", pid);
+            } else if (spotifySceneForeground()) {
                 SPLog(@"Spotify is frontmost (pid %d): not killing it, handing the request over", pid);
             } else {
                 SPLog(@"Spotify is running but not playing (pid %d): closing it so it launches clean", pid);
