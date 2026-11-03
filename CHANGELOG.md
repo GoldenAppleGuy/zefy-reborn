@@ -2,6 +2,12 @@
 
 Private build. Versions are listed newest first.
 
+## 1.0.2
+- A link that carries no play flag no longer closes a running Spotify before it is handed over. It was treated as a play request, so a link with nothing to play killed the app and restarted it.
+- A link that carries a play flag no longer closes a frontmost Spotify. It used to be killed and relaunched even when you were looking at it, which felt like a crash. The request is handed to the running app instead; the force-restart only happens for a Spotify that is not frontmost. The scene state is read in SpringBoard's own process, after an earlier synchronous SpringBoardServices query froze SpringBoard.
+- Clean Relaunch is a new switch (off by default). Turn it on to let Spotify close and relaunch for more reliable audio; with it off, playback is handed to the running app and Spotify never closes.
+- A plain link passed to `zefy` with no play flag now opens the page instead of doing nothing.
+
 ## 1.0.1
 - Quick Play no longer takes over the play press of a paused session from another app, such as a video or a podcast. It only starts Spotify when nothing, or Apple's Music app, owns the media session.
 - Resume works on iOS 14: the tweak uses the media function iOS 14 has, keeps Spotify running long enough after a background launch to read the waiting command, and sends a resume again when Spotify drops it.
