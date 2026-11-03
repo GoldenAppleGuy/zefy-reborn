@@ -1093,15 +1093,32 @@ static void sendSpotifyCommandEx(NSString *line, BOOL launch);
 static void sendSpotifyCommand(NSString *line) { sendSpotifyCommandEx(line, YES); }
 
 // Waking a Spotify that is suspended in the background often loses the audio a moment after it starts, while a fresh
-// launch is reliable. So when a request starts playback, nothing is playing, and Spotify is still running (suspended),
-// it is closed first and launched clean.
+// launch is reliable. So when a request starts playback, nothing is playing, and Spotify is still running
+// (suspended), it is closed first and launched clean. When Spotify is frontmost, killing it would just make the
+// app vanish on the user, so the request is handed over instead.
 @interface SBApplicationController : NSObject
 + (instancetype)sharedInstance;
 - (id)applicationWithBundleIdentifier:(NSString *)bundleIdentifier;
 @end
 
+// The app the user is looking at, from SpringBoardServices. sysctl cannot tell foreground from suspended on iOS 15.
+// A nil answer (no app frontmost, e.g. the lock screen) counts as not looking at Spotify.
+static NSString *frontmostApplicationID(void) {
+    static CFStringRef (*fn)(void);
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        void *sb = dlopen("/System/Library/PrivateFrameworks/SpringBoardServices.framework/SpringBoardServices", RTLD_NOW);
+        fn = sb ? dlsym(sb, "SBSCopyFrontmostApplicationDisplayIdentifier") : NULL;
+    });
+    if (!fn) return nil;
+    return (__bridge_transfer NSString *)fn();
+}
+
 static BOOL commandStartsPlayback(NSString *line) {
-    if (![line hasPrefix:@"zefyreborn:"]) return YES;   // a link
+    if (![line hasPrefix:@"zefyreborn:"]) {   // a link only restarts Spotify when it carries a play flag
+        BOOL shuffle;
+        return parseLink([NSURL URLWithString:line], &shuffle) != nil;
+    }
     if ([line isEqualToString:kResumeCommand]) return YES;
     for (NSString *name in @[@"resume", @"by-name", @"random", @"radio", @"likedsongs"])
         if ([line hasPrefix:[kCommandPrefix stringByAppendingString:name]]) return YES;
@@ -1131,10 +1148,14 @@ static void sendSpotifyCommandEx(NSString *line, BOOL launch) {
         pid_t pid = spotifyPID();
         id mc = NSClassFromString(@"SBMediaController") ? [NSClassFromString(@"SBMediaController") sharedInstance] : nil;
         if (pid > 1 && ![mc isPlaying]) {
-            SPLog(@"Spotify is running but not playing (pid %d): closing it so it launches clean", pid);
-            kill(pid, SIGKILL);
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ sendSpotifyCommandNow(line, launch); });
-            return;
+            if ([frontmostApplicationID() isEqualToString:kSpotifyID]) {
+                SPLog(@"Spotify is frontmost (pid %d): not killing it, handing the request over", pid);
+            } else {
+                SPLog(@"Spotify is running but not playing (pid %d): closing it so it launches clean", pid);
+                kill(pid, SIGKILL);
+                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ sendSpotifyCommandNow(line, launch); });
+                return;
+            }
         }
     }
     sendSpotifyCommandNow(line, launch);
