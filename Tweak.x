@@ -725,6 +725,29 @@ static void playPendingAlbum(id state) {
     } @catch (NSException *e) { SPLog(@"pending album: shuffle off failed: %@", e); dispatch_async(dispatch_get_main_queue(), start); }
 }
 
+// Opens a page inside Spotify by handing its scene delegate the same kind of URL context a tapped link produces.
+// Going through SpringBoard's openURL instead blocks for about ten seconds on this iOS version.
+static void navigateToAlbum(NSString *uri) {
+    Class ctxClass = NSClassFromString(@"UIOpenURLContext"), optClass = NSClassFromString(@"UISceneOpenURLOptions");
+    for (UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
+        id del = scene.delegate;
+        if (![del respondsToSelector:@selector(scene:openURLContexts:)]) continue;
+        id ctx = ctxClass ? [[ctxClass alloc] init] : nil;
+        @try {
+            [ctx setValue:[NSURL URLWithString:uri] forKey:@"URL"];
+            if (optClass) [ctx setValue:[[optClass alloc] init] forKey:@"options"];
+        } @catch (NSException *e) { SPLog(@"album nav: no URL context (%@)", e); ctx = nil; }
+        if (ctx) {
+            SPLog(@"album nav: %@ via %@", uri, NSStringFromClass([del class]));
+            ((void (*)(id, SEL, id, id))objc_msgSend)(del, @selector(scene:openURLContexts:), scene, [NSSet setWithObject:ctx]);
+            return;
+        }
+        break;
+    }
+    SPLog(@"album nav: no scene delegate, falling back to the web activity");
+    navigateTo(uri);
+}
+
 static void runAlbumCommand(NSString *name, NSString *arg, int attempt) {
     id playback = findController();
     if (!playback) {
@@ -746,7 +769,7 @@ static void runAlbumCommand(NSString *name, NSString *arg, int attempt) {
         dispatch_async(dispatch_get_main_queue(), ^{
         if (!albumURI.length) { SPLog(@"%@: album not found for %@", name, trackURI); writeResult(@"none"); return; }
         if ([name isEqualToString:@"album-uri"]) { writeResult(albumURI); return; }
-        if ([name isEqualToString:@"album-open"]) { navigateTo(albumURI); return; }
+        if ([name isEqualToString:@"album-open"]) { navigateToAlbum(albumURI); return; }
         // Spotify has no way to queue an album (only single tracks), so the album is remembered and started
         // when the current track changes, which is what "play it next" means in practice.
         if ([pendingAlbum() isEqualToString:albumURI]) {
@@ -1694,8 +1717,8 @@ static void handleRelay(NSString *name, NSString *arg) {
         __block BOOL queue = [name isEqualToString:@"album-queue"];
         waitSpotifyResult(^(NSString *album) {
             if (![album hasPrefix:@"spotify:album:"]) { sbResult(@"No album for the playing track"); return; }
-            // Opening the link can take seconds, so it is handed off and the reply does not wait for it.
-            dispatch_async(dispatch_get_main_queue(), ^{ sbOpenURLString(album); });
+            // Spotify navigates to it itself; the system openURL path took ten seconds here.
+            sendSpotifyCommandEx([@"zefyreborn:cmd album-open " stringByAppendingString:album], YES);
             if (!queue) { sbResult([@"Opened " stringByAppendingString:album]); return; }
             if (path) [NSFileManager.defaultManager removeItemAtPath:path error:nil];
             sendSpotifyCommandEx([@"zefyreborn:cmd album-queue " stringByAppendingString:album], NO);
