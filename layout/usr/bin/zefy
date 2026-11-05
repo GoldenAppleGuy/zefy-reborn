@@ -23,6 +23,11 @@ Usage: zefy [option] [value]
                    open the playing track's album page and play the album after this track; if the playing song is
                    the album's first one it starts at the second. --no-open skips opening the page, --no-skip plays
                    the album from its first song anyway. Run it again to cancel.
+  --artist-open    open the artist page of the playing track
+  --artist-queue [--no-open] [--no-skip]
+                   open the playing track's artist page and play that artist after this track; if their play
+                   button would start on the song already playing, it skips to the next one. --no-open skips
+                   opening the page, --no-skip keeps that song anyway. Run it again to cancel.
   -k [0|1|2]       like the playing track: 0 unlike, 1 like (default), 2 toggle
   -a <playlist>    add the playing track to a playlist (spotify:playlist:<id>)
   -d <playlist>    remove the playing track from a playlist
@@ -74,6 +79,10 @@ foreground=0
 wait_result=0
 album_open=0
 album_queue=0
+artist_open=0
+artist_queue=0
+page_open=1
+page_skip=1
 case "$1" in
     --sleep)
         [ $# -eq 2 ] || fail "--sleep needs minutes, off or status"
@@ -115,13 +124,30 @@ case "$1" in
         shift
         while [ $# -gt 0 ]; do
             case "$1" in
-                --no-open) sbline="$sbline noopen" ;;
-                --no-skip) sbline="$sbline noskip" ;;
+                --no-open) page_open=0 ;;
+                --no-skip) page_skip=0 ;;
                 *) fail "unknown flag for --album-queue: $1" ;;
             esac
             shift
         done
+        [ $page_open -eq 0 ] && sbline="$sbline noopen"
+        [ $page_skip -eq 0 ] && sbline="$sbline noskip"
         line="zefyreborn:cmd album-uri" ;;
+    --artist-open) artist_open=1; line="zefyreborn:cmd artist-uri"; sbline="artist-open"; wait_result=1 ;;
+    --artist-queue)
+        artist_queue=1; sbline="artist-queue"; wait_result=1
+        shift
+        while [ $# -gt 0 ]; do
+            case "$1" in
+                --no-open) page_open=0 ;;
+                --no-skip) page_skip=0 ;;
+                *) fail "unknown flag for --artist-queue: $1" ;;
+            esac
+            shift
+        done
+        [ $page_open -eq 0 ] && sbline="$sbline noopen"
+        [ $page_skip -eq 0 ] && sbline="$sbline noskip"
+        line="zefyreborn:cmd artist-uri" ;;
     -*) fail "unknown option $1 (see -h)" ;;
     *) [ $# -eq 1 ] || fail "one link at a time"; line="$1"; foreground=1 ;;
 esac
@@ -179,8 +205,8 @@ if [ $use_relay -eq 1 ]; then
         exit 0
     fi
     if [ $wait_result -eq 1 ]; then
-        if [ $album_open -eq 1 ] || [ $album_queue -eq 1 ]; then
-            # SpringBoard resolves the album, opens its page and (for queue) arms it, so this is one round trip.
+        if [ $album_open -eq 1 ] || [ $album_queue -eq 1 ] || [ $artist_open -eq 1 ] || [ $artist_queue -eq 1 ]; then
+            # SpringBoard resolves the page, opens it and (for queue) arms it, so this is one round trip.
             if ask "$sbline" 15; then cat $sb.sbresult; else echo "SpringBoard did not answer (is the tweak loaded there?)"; fi
             exit 0
         fi
@@ -225,18 +251,26 @@ if [ $foreground -eq 1 ] || ! ps -ax -o comm | grep -q "Spotify.app/Spotify"; th
 fi
 if [ $wait_result -eq 1 ]; then
     if waitfor "$dir/zefyreborn.result" 8; then
-        if [ $album_open -eq 0 ] && [ $album_queue -eq 0 ]; then cat "$dir/zefyreborn.result"; exit 0; fi
+        if [ $album_open -eq 0 ] && [ $album_queue -eq 0 ] && [ $artist_open -eq 0 ] && [ $artist_queue -eq 0 ]; then
+            cat "$dir/zefyreborn.result"; exit 0
+        fi
+        kind=album
+        [ $artist_open -eq 1 ] || [ $artist_queue -eq 1 ] && kind=artist
         a=$(cat "$dir/zefyreborn.result")
         case "$a" in
-            spotify:album:*)
-                rm -f $sb.sbresult
-                printf '%s\n' "openurl $a" > $sb.sbcmd.tmp 2>/dev/null && mv $sb.sbcmd.tmp $sb.sbcmd 2>/dev/null
-                if [ $album_queue -eq 1 ]; then
+            spotify:album:*|spotify:artist:*)
+                if [ $page_open -eq 1 ]; then
+                    rm -f $sb.sbresult
+                    printf '%s\n' "openurl $a" > $sb.sbcmd.tmp 2>/dev/null && mv $sb.sbcmd.tmp $sb.sbcmd 2>/dev/null
+                fi
+                if [ $album_queue -eq 1 ] || [ $artist_queue -eq 1 ]; then
                     rm -f "$dir/zefyreborn.result"
-                    printf '%s\n' "zefyreborn:cmd album-queue $a" > "$dir/zefyreborn.cmd.tmp" && mv "$dir/zefyreborn.cmd.tmp" "$dir/zefyreborn.cmd"
+                    queuecmd="zefyreborn:cmd $kind-queue $a"
+                    [ $page_skip -eq 0 ] && queuecmd="$queuecmd noskip"
+                    printf '%s\n' "$queuecmd" > "$dir/zefyreborn.cmd.tmp" && mv "$dir/zefyreborn.cmd.tmp" "$dir/zefyreborn.cmd"
                     waitfor "$dir/zefyreborn.result" 8 && cat "$dir/zefyreborn.result" || echo "No answer from Spotify"
                 else echo "Opened $a"; fi ;;
-            *) echo "No album for the playing track" ;;
+            *) echo "No $kind for the playing track" ;;
         esac
         exit 0
     fi
