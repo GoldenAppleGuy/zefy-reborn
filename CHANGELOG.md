@@ -7,7 +7,7 @@ Private build. Versions are listed newest first.
 - `zefy --album-queue` opens the playing track's album page and plays that album after the current track. Spotify cannot queue an album (only single tracks), so the album is remembered and started when the track changes, with shuffle off. If the song playing when you asked was the album's first one, it starts at the second so you do not hear it twice. `--no-open` leaves the page closed, `--no-skip` keeps the first song. Running it again cancels. It works on every Spotify version, including 8.x, because it needs no album track list.
 - Both are also in the RemoteCompanion add-on as Open Album and Queue Album.
 - `zefy --artist-open` opens the artist page of the currently playing track without playing anything. The artist comes from the track's own metadata, so it works with Spotify 8.x too.
-- `zefy --artist-queue` opens the playing track's artist page and plays that artist after the current track, with shuffle off. If their play button would start on the song already playing, it skips to the next one. `--no-open` leaves the page closed, `--no-skip` keeps that song. Running it again cancels.
+- `zefy --artist-queue` opens the playing track's artist page and plays that artist after the current track, shuffled like the artist page's play button. If their play button would start on the song already playing, it skips to the next one. `--no-open` leaves the page closed, `--no-skip` keeps that song, `--no-shuffle` plays the artist in order. Running it again cancels.
 - Both are also in the RemoteCompanion add-on as Open Artist and Queue Artist.
 - `zefy <link>` and `zefy -n <link>` now bring Spotify to the front on iOS 15 before handing it the page, so the page actually comes to the screen.
 

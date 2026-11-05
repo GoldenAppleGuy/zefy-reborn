@@ -842,6 +842,12 @@ static NSString *pendingArtistTrack(void) {
     return lines.count > 1 && [lines[1] hasPrefix:@"spotify:track:"] ? lines[1] : nil;
 }
 
+// --no-shuffle keeps the artist in order instead of shuffling it, which is what its play button does.
+static BOOL pendingArtistNoShuffle(void) {
+    NSString *text = [NSString stringWithContentsOfFile:pendingArtistPath() encoding:NSUTF8StringEncoding error:nil];
+    return [text containsString:@"noshuffle"];
+}
+
 // An artist's play button can start on the very song that armed it. Once the artist context is playing, the
 // current track is compared with the arming one and skipped if it is the same.
 static void skipIfArtistRepeats(NSString *artistURI, NSString *trackURI, int attempts) {
@@ -873,25 +879,27 @@ static void playPendingArtist(id state) {
     NSString *pending = pendingArtist();
     if (!pending) return;
     NSString *armingTrack = pendingArtistTrack();
+    BOOL noShuffle = pendingArtistNoShuffle();
     [[NSFileManager defaultManager] removeItemAtPath:pendingArtistPath() error:nil];
-    SPLog(@"pending artist: starting %@ after the track change", pending);
+    SPLog(@"pending artist: starting %@ after the track change (shuffle %@)", pending, noShuffle ? @"off" : @"on");
     id c = findController();
     if (!c) { SPLog(@"pending artist: no playback controller"); return; }
     void (^start)(void) = ^{
-        startPlayback(pending, NO);
+        startPlayback(pending, !noShuffle);
         if (armingTrack.length) {
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
                 skipIfArtistRepeats(pending, armingTrack, 8);
             });
         }
     };
-    // Shuffle would start the artist somewhere else, so turn it off first, like tapping their play button.
+    // Spotify's play button on an artist page shuffles, so that is the default here; --no-shuffle keeps the order.
     @try {
-        ((void (*)(id, SEL, id))objc_msgSend)(c, @selector(disableShuffleWithCompletionHandler:), ^(void *x) {
-            SPLog(@"pending artist: shuffle off (%p)", x);
+        SEL shuffleSel = noShuffle ? @selector(disableShuffleWithCompletionHandler:) : @selector(enableShuffleWithCompletionHandler:);
+        ((void (*)(id, SEL, id))objc_msgSend)(c, shuffleSel, ^(void *x) {
+            SPLog(@"pending artist: shuffle %@ (%p)", noShuffle ? @"off" : @"on", x);
             dispatch_async(dispatch_get_main_queue(), start);
         });
-    } @catch (NSException *e) { SPLog(@"pending artist: shuffle off failed: %@", e); dispatch_async(dispatch_get_main_queue(), start); }
+    } @catch (NSException *e) { SPLog(@"pending artist: shuffle change failed: %@", e); dispatch_async(dispatch_get_main_queue(), start); }
 }
 
 // Opens a page inside Spotify by handing its scene delegate the same kind of URL context a tapped link produces.
@@ -984,6 +992,7 @@ static void runArtistCommand(NSString *name, NSString *arg, int attempt) {
     NSArray *parts = [arg componentsSeparatedByString:@" "];
     NSString *artistArg = parts.firstObject ?: @"";
     BOOL noSkip = [arg rangeOfString:@"noskip"].location != NSNotFound;
+    BOOL noShuffle = [arg rangeOfString:@"noshuffle"].location != NSNotFound;
     BOOL givenArtist = [artistArg hasPrefix:@"spotify:artist:"];
     NSString *trackURI = givenArtist ? nil : currentTrackURI(playback).absoluteString;
     if (!givenArtist && !trackURI.length) {
@@ -1008,8 +1017,10 @@ static void runArtistCommand(NSString *name, NSString *arg, int attempt) {
             return;
         }
         NSString *armingTrack = noSkip ? nil : currentTrackURI(findController()).absoluteString;
-        SPLog(@"artist-queue: will start %@ after this track (arming track %@)", artistURI, armingTrack ?: @"ignored");
-        NSString *text = armingTrack.length ? [artistURI stringByAppendingFormat:@"\n%@", armingTrack] : artistURI;
+        SPLog(@"artist-queue: will start %@ after this track (arming track %@, shuffle %@)", artistURI, armingTrack ?: @"ignored", noShuffle ? @"off" : @"on");
+        NSString *text = artistURI;
+        if (armingTrack.length) text = [text stringByAppendingFormat:@"\n%@", armingTrack];
+        if (noShuffle) text = [text stringByAppendingString:@"\nnoshuffle"];
         [text writeToFile:pendingArtistPath() atomically:YES encoding:NSUTF8StringEncoding error:nil];
         [[NSFileManager defaultManager] removeItemAtPath:pendingAlbumPath() error:nil];   // only one can go next
         writeResult(@"Artist plays after this track (run it again to cancel)");
@@ -1955,6 +1966,7 @@ static void handleRelay(NSString *name, NSString *arg) {
         BOOL queue = [name hasSuffix:@"queue"];
         BOOL openPage = [arg rangeOfString:@"noopen"].location == NSNotFound;
         BOOL noSkip = [arg rangeOfString:@"noskip"].location != NSNotFound;
+        BOOL noShuffle = [arg rangeOfString:@"noshuffle"].location != NSNotFound;
         waitSpotifyResult(^(NSString *target) {
             if (![target hasPrefix:prefix]) { sbResult(isArtist ? @"No artist for the playing track" : @"No album for the playing track"); return; }
             // Spotify navigates to it itself; the system openURL path took ten seconds here.
@@ -1963,6 +1975,7 @@ static void handleRelay(NSString *name, NSString *arg) {
             if (path) [NSFileManager.defaultManager removeItemAtPath:path error:nil];
             NSString *command = [NSString stringWithFormat:@"zefyreborn:cmd %@-queue %@", kind, target];
             if (noSkip) command = [command stringByAppendingString:@" noskip"];
+            if (noShuffle) command = [command stringByAppendingString:@" noshuffle"];
             sendSpotifyCommandEx(command, NO);
             waitSpotifyResult(^(NSString *reply) { sbResult(reply ?: @"No answer from Spotify"); }, 0);
         }, 0);
