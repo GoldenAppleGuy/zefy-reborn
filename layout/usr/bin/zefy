@@ -18,6 +18,8 @@ Usage: zefy [option] [value]
   --resume         resume
   --seek <sec>     move the position by seconds, negative goes back
   --queue <uri>    add a track to the queue (spotify:track:<id>)
+  --album-open     open the album page of the playing track
+  --album-queue    queue the playing track's album (appended in order; Spotify has no true play-next)
   -k [0|1|2]       like the playing track: 0 unlike, 1 like (default), 2 toggle
   -a <playlist>    add the playing track to a playlist (spotify:playlist:<id>)
   -d <playlist>    remove the playing track from a playlist
@@ -92,6 +94,8 @@ case "$1" in
     --randomalbum) line="zefyreborn:cmd random albums" ;;
     --likedsongs) line="zefyreborn:cmd likedsongs" ;;
     --queue) [ $# -eq 2 ] || fail "--queue needs a track uri"; line="zefyreborn:cmd queue $2" ;;
+    --album-open) line="zefyreborn:cmd album-open"; foreground=1 ;;
+    --album-queue) line="zefyreborn:cmd album-queue"; wait_result=1 ;;
     -*) fail "unknown option $1 (see -h)" ;;
     *) [ $# -eq 1 ] || fail "one link at a time"; line="$1"; foreground=1 ;;
 esac
@@ -159,6 +163,8 @@ if [ $use_relay -eq 1 ]; then
     if [ $wait_result -eq 1 ]; then
         ask "relay-wait $line" 10 && cat $sb.sbresult || echo "No answer from Spotify"
     else
+        # A page only shows if Spotify is already frontmost when the link arrives.
+        [ $foreground -eq 1 ] && $JB/usr/bin/uiopen --bundleid com.spotify.client 2>/dev/null
         ask "relay $line" 3 || { echo "SpringBoard did not answer (is the tweak loaded there?)"; exit 1; }
     fi
     exit 0

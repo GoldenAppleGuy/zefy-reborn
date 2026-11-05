@@ -296,6 +296,44 @@
       }
     },
     {
+      "command": "album open",
+      "name": "Open Album",
+      "icon": "arrow.up.forward.app",
+      "run": [
+        {
+          "exec": [
+            "/var/jb/bin/sh",
+            "/var/jb/usr/bin/zefy",
+            "--album-open"
+          ]
+        }
+      ],
+      "banner": {
+        "title": "Spotify",
+        "icon": "arrow.up.forward.app",
+        "subtitle": "Open Album"
+      }
+    },
+    {
+      "command": "album queue",
+      "name": "Queue Album",
+      "icon": "text.badge.plus",
+      "run": [
+        {
+          "exec": [
+            "/var/jb/bin/sh",
+            "/var/jb/usr/bin/zefy",
+            "--album-queue"
+          ]
+        }
+      ],
+      "banner": {
+        "title": "Spotify",
+        "icon": "text.badge.plus",
+        "subtitle": "Album Queued"
+      }
+    },
+    {
       "command": "seek",
       "name": "Seek",
       "icon": "goforward.15",

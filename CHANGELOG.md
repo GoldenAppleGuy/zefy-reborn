@@ -2,6 +2,11 @@
 
 Private build. Versions are listed newest first.
 
+## 1.0.3
+- `zefy --album-open` opens the album page of the currently playing track without playing anything. The album comes from the track's own metadata, so it works with Spotify 8.x too.
+- `zefy --album-queue` queues every track of the playing track's album in order. Spotify exposes only append-to-end (no true play-next), so the album lands after the current queue. Spotify 8.x cannot list an album's tracks at all (resolving and browsing an album are both unavailable there), so on those versions the command says so instead of doing nothing. Both are also in the RemoteCompanion add-on as Open Album and Queue Album.
+- `zefy <link>` and `zefy -n <link>` now bring Spotify to the front on iOS 15 before handing it the page, so the page actually comes to the screen.
+
 ## 1.0.2
 - A link that carries no play flag no longer closes a running Spotify before it is handed over. It was treated as a play request, so a link with nothing to play killed the app and restarted it.
 - A link that carries a play flag no longer closes a frontmost Spotify. It used to be killed and relaunched even when you were looking at it, which felt like a crash. The request is handed to the running app instead; the force-restart only happens for a Spotify that is not frontmost. The scene state is read in SpringBoard's own process, after an earlier synchronous SpringBoardServices query froze SpringBoard.

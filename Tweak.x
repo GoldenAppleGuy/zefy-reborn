@@ -590,6 +590,158 @@ static void runCollectionCommand(NSString *name, NSString *arg, int attempt) {
     }
 }
 
+// ---- album of the playing track ------------------------------------------------------------------
+// SPTPlayerTrack has no albumURI property (only URI/artistURI/trackTitle/metadata), so the album is
+// read from track.metadata[@"album_uri"] first, then from the resolver's contextURI/viewURI.
+
+static NSString *playableURI(NSString *uri);
+static void writeResult(NSString *text);
+
+static NSString *extractAlbumURI(NSString *s) {
+    if (!s.length || [s isEqualToString:@"(null)"]) return nil;
+    // Matches both spotify:album:<id> and the library form spotify:user:<name>:collection:album:<id>.
+    NSRegularExpression *re = [NSRegularExpression regularExpressionWithPattern:@"spotify:[^\\s]*?album:[A-Za-z0-9]+" options:0 error:nil];
+    NSTextCheckingResult *m = [re firstMatchInString:s options:0 range:NSMakeRange(0, s.length)];
+    return m ? playableURI([s substringWithRange:m.range]) : nil;
+}
+
+static id makeContentOptions(id cc) {
+    NSArray *candidates = @[[NSValue valueWithPointer:NSSelectorFromString(@"makeContentRequestOptions:offlineOnly:enableEntityPages:debugLogTags:spacesLocaleOverride:libraryCollectionRootFormat:browseGenreFormat:overrideRecentlyPlayedPlaceholder:synchronize:libraryContentPreferences:")],   // 9.1
+                            [NSValue valueWithPointer:NSSelectorFromString(@"makeContentRequestOptions:offlineOnly:enableEntityPages:debugLogTags:spacesLocaleOverride:libraryCollectionRootFormat:browseGenreFormat:overrideRecentlyPlayedPlaceholder:synchronize:tags:")],                        // 9.0
+                            [NSValue valueWithPointer:NSSelectorFromString(@"makeContentRequestOptions:offlineOnly:enableEntityPages:debugLogTags:spacesLocaleOverride:libraryCollectionRootFormat:browseGenreFormat:overrideRecentlyPlayedPlaceholder:synchronize:")],                              // 9.0 shorter
+                            [NSValue valueWithPointer:NSSelectorFromString(@"makeContentRequestOptions:offlineOnly:enableEntityPages:debugLogTags:spacesLocaleOverride:likedSongsInPlayLists:")]];   // 8.6
+    SEL makeSel = NULL;
+    for (NSValue *v in candidates) if ([cc respondsToSelector:v.pointerValue]) { makeSel = v.pointerValue; break; }
+    if (!makeSel) {   // 8.x has no :synchronize: tail, so find the real name by its common prefix
+        unsigned mc = 0;
+        Method *ms = class_copyMethodList(object_getClass(cc), &mc);
+        for (unsigned i = 0; i < mc; i++) {
+            NSString *n = NSStringFromSelector(method_getName(ms[i]));
+            if ([n hasPrefix:@"makeContentRequestOptions:offlineOnly:enableEntityPages:"] && (!makeSel || n.length > NSStringFromSelector(makeSel).length)) makeSel = method_getName(ms[i]);
+        }
+        free(ms);
+    }
+    if (!makeSel) return nil;
+    @try {
+        if ([NSStringFromSelector(makeSel) hasSuffix:@"likedSongsInPlayLists:"])
+            return ((id (*)(id, SEL, unsigned long long, BOOL, BOOL, id, id, BOOL))objc_msgSend)(cc, makeSel, 100, NO, NO, nil, nil, NO);
+        return ((id (*)(id, SEL, unsigned long long, BOOL, BOOL, id, id, long long, long long, BOOL, BOOL, id))objc_msgSend)(cc, makeSel, 100, NO, NO, nil, nil, 0, 0, NO, NO, nil);
+    } @catch (NSException *e) { SPLog(@"resolve: option builder failed: %@", e); return nil; }
+}
+
+// The resolver answers with a response object (9.x) or the items themselves (8.6).
+static void resolveContentWith(NSString *uri, void (^completion)(NSArray *items, id error)) {
+    id cc = findInstance(kContentClass);
+    SEL resolve = @selector(resolveContentWithURI:options:withCompletionHandler:);
+    if (!cc || ![cc respondsToSelector:resolve]) { SPLog(@"resolve %@: no content resolver", uri); completion(@[], nil); return; }
+    id opts = makeContentOptions(cc);
+    if (!opts) { SPLog(@"resolve %@: no option builder", uri); completion(@[], nil); return; }
+    ((void (*)(id, SEL, id, id, id))objc_msgSend)(cc, resolve, [NSURL URLWithString:uri], opts, ^(id response, id error) {
+        completion(contentItems(response), error);
+    });
+}
+
+static void resolveAlbumForTrack(NSString *trackURI, void (^done)(NSString *albumURI)) {
+    @try {
+        id playback = findController();
+        id ps = playback ? ((id (*)(id, SEL))objc_msgSend)(playback, @selector(playerState)) : nil;
+        id track = nil;
+        @try { track = [ps valueForKey:@"track"]; } @catch (NSException *e) {}
+        id meta = nil;
+        @try { meta = [track valueForKey:@"metadata"]; } @catch (NSException *e) {}
+        if ([meta isKindOfClass:NSDictionary.class]) {
+            for (NSString *k in @[@"album_uri", @"albumUri", @"albumURI", @"context_uri"]) {
+                NSString *a = extractAlbumURI([[meta objectForKey:k] description]);
+                if (a) { SPLog(@"album: from metadata %@=%@", k, a); done(a); return; }
+            }
+            SPLog(@"album: metadata has no album uri (keys %lu)", (unsigned long)[(NSDictionary *)meta count]);
+        }
+        for (NSString *k in @[@"albumURI", @"albumUri", @"albumURL", @"contextURI", @"album"]) {
+            NSString *v = nil;
+            @try { v = [[track valueForKey:k] description]; } @catch (NSException *e) {}
+            NSString *a = extractAlbumURI(v);
+            if (a) { SPLog(@"album: from track.%@=%@", k, a); done(a); return; }
+        }
+        NSString *ctx = nil;
+        @try { ctx = [[ps valueForKey:@"contextURI"] description]; } @catch (NSException *e) {}
+        NSString *ca = extractAlbumURI(ctx);
+        if (ca) { SPLog(@"album: from playerState.contextURI=%@", ca); done(ca); return; }
+    } @catch (NSException *e) { SPLog(@"album: metadata lookup failed: %@", e); }
+    resolveContentWith(trackURI, ^(NSArray *items, id error) {
+        for (id item in items) {
+            for (NSString *k in @[@"contextURI", @"viewURI", @"URI"]) {
+                NSString *a = nil;
+                @try { a = extractAlbumURI([[item valueForKey:k] description]); } @catch (NSException *e) {}
+                if (a && [a hasPrefix:@"spotify:album:"]) { SPLog(@"album: resolved %@ via %@ for %@", a, k, trackURI); done(a); return; }
+            }
+        }
+        SPLog(@"album: resolver found no album for %@ (%lu items, error %@)", trackURI, (unsigned long)items.count, error);
+        done(nil);
+    });
+}
+
+static void runAlbumCommand(NSString *name, int attempt) {
+    id playback = findController();
+    if (!playback) {
+        if (attempt < 40) dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ runAlbumCommand(name, attempt + 1); });
+        else SPLog(@"%@: no playback controller", name);
+        return;
+    }
+    NSURL *track = currentTrackURI(playback);
+    if (!track) {
+        // Just after a background launch the player state can be empty for a few seconds.
+        if (attempt < 40) dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ runAlbumCommand(name, attempt + 1); });
+        else SPLog(@"%@: nothing is playing", name);
+        return;
+    }
+    NSString *trackURI = track.absoluteString;
+    SPLog(@"%@ track %@", name, trackURI);
+    resolveAlbumForTrack(trackURI, ^(NSString *albumURI) {
+        // The resolver answers on Spotify's thread; navigate and enqueue on main like every other command.
+        dispatch_async(dispatch_get_main_queue(), ^{
+        if (!albumURI.length) { SPLog(@"%@: album not found for %@", name, trackURI); return; }
+        if ([name isEqualToString:@"album-open"]) { navigateTo(albumURI); return; }
+        // album-queue: Spotify exposes only append (enqueueTrackWithURI:), no true play-next,
+        // so the album's tracks are appended in order right after the current queue.
+        void (^queueTracks)(NSArray *) = ^(NSArray *items) {
+            NSMutableArray *tracks = [NSMutableArray array];
+            for (id item in items) {
+                NSString *u = [[item valueForKey:@"URI"] description];
+                if ([u hasPrefix:@"spotify:track:"]) [tracks addObject:u];
+            }
+            if (!tracks.count) { SPLog(@"album-queue: no tracks in %@", albumURI); writeResult(@"Spotify did not list the album's tracks on this version"); return; }
+            SPLog(@"album-queue: queueing %lu tracks from %@", (unsigned long)tracks.count, albumURI);
+            writeResult([NSString stringWithFormat:@"Queued %lu tracks after the current queue", (unsigned long)tracks.count]);
+            // The resolver answers on Spotify's thread; the enqueue calls go back on main like other commands.
+            dispatch_async(dispatch_get_main_queue(), ^{
+            id c = findController();
+            if (!c) { SPLog(@"album-queue: no playback controller"); return; }
+            for (NSString *t in tracks) {
+                NSURL *u = [NSURL URLWithString:t];
+                ((void (*)(id, SEL, id, id))objc_msgSend)(c, @selector(enqueueTrackWithURI:completionHandler:), u, ^(void *x) {
+                    SPLog(@"album-queue queued %@ (%p)", t, x);
+                });
+            }
+            });
+        };
+        // Resolve first (it answers on 8.x; browsing an album does not), then browse as a fallback.
+        __block BOOL answered = NO;
+        resolveContentWith(albumURI, ^(NSArray *items, id error) {
+            if (items.count) { answered = YES; queueTracks(items); return; }
+            SPLog(@"album-queue: resolve gave nothing (%@), trying browse", error);
+            browseChildrenWith(albumURI, NO, nil, ^(id response, id error) {
+                answered = YES;
+                queueTracks(contentItems(response));
+            });
+            // Some Spotify builds never answer a browse of an album; say so instead of doing nothing.
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(4.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                if (!answered) writeResult(@"Spotify did not list the album's tracks on this version");
+            });
+        });
+        });
+    });
+}
+
 // ---- browsing Spotify's own content tree (the one CarPlay uses) -------------------------------------------
 
 // Resolves the children of a node such as spotify:collection:playlists and hands back the response object.
@@ -829,6 +981,7 @@ static void runCommandLineUnsafe(NSString *line) {
         return;
     }
     if ([name isEqualToString:@"like"] || [name isEqualToString:@"liked"] || [name isEqualToString:@"playlist-has"] || [name isEqualToString:@"playlist-add"] || [name isEqualToString:@"playlist-remove"]) { runCollectionCommand(name, arg, 0); return; }
+    if ([name isEqualToString:@"album-open"] || [name isEqualToString:@"album-queue"]) { runAlbumCommand(name, 0); return; }
     if ([name isEqualToString:@"instances"]) { for (NSString *cn in [arg componentsSeparatedByString:@","]) findInstance(cn); return; }
     runControllerCommand(name, arg, 0);
 }
