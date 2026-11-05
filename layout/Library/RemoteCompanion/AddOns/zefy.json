@@ -316,7 +316,7 @@
     },
     {
       "command": "album queue",
-      "name": "Queue Album",
+      "name": "Play Album Next",
       "icon": "text.badge.plus",
       "run": [
         {

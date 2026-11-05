@@ -680,6 +680,42 @@ static void resolveAlbumForTrack(NSString *trackURI, void (^done)(NSString *albu
     });
 }
 
+// An album that should start when the current track ends ("play this album next").
+static NSString *pendingAlbumPath(void) {
+    return [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject stringByAppendingPathComponent:@"zefyreborn.pendingalbum"];
+}
+
+static NSString *pendingAlbum(void) {
+    NSString *text = [NSString stringWithContentsOfFile:pendingAlbumPath() encoding:NSUTF8StringEncoding error:nil];
+    text = [text stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    return [text hasPrefix:@"spotify:album:"] ? text : nil;
+}
+
+// Called from the player state hook when the track changes. The album of the new track is compared with the
+// pending one so that an album already playing is not restarted at its first song.
+static void playPendingAlbum(id state) {
+    NSString *pending = pendingAlbum();
+    if (!pending) return;
+    NSString *nowPlayingAlbum = nil;
+    @try {
+        id track = [state valueForKey:@"track"], meta = [track valueForKey:@"metadata"];
+        if ([meta isKindOfClass:NSDictionary.class]) nowPlayingAlbum = extractAlbumURI([[meta objectForKey:@"album_uri"] description]);
+    } @catch (NSException *e) {}
+    [[NSFileManager defaultManager] removeItemAtPath:pendingAlbumPath() error:nil];
+    if ([pending isEqualToString:nowPlayingAlbum ?: @""]) { SPLog(@"pending album: %@ is already playing, nothing to do", pending); return; }
+    SPLog(@"pending album: starting %@ after the track change", pending);
+    id c = findController();
+    if (!c) { SPLog(@"pending album: no playback controller"); return; }
+    void (^start)(void) = ^{ startPlayback(pending, NO); };
+    // Shuffle would start the album on a random song, so turn it off first.
+    @try {
+        ((void (*)(id, SEL, id))objc_msgSend)(c, @selector(disableShuffleWithCompletionHandler:), ^(void *x) {
+            SPLog(@"pending album: shuffle off (%p)", x);
+            dispatch_async(dispatch_get_main_queue(), start);
+        });
+    } @catch (NSException *e) { SPLog(@"pending album: shuffle off failed: %@", e); dispatch_async(dispatch_get_main_queue(), start); }
+}
+
 static void runAlbumCommand(NSString *name, int attempt) {
     id playback = findController();
     if (!playback) {
@@ -699,45 +735,20 @@ static void runAlbumCommand(NSString *name, int attempt) {
     resolveAlbumForTrack(trackURI, ^(NSString *albumURI) {
         // The resolver answers on Spotify's thread; navigate and enqueue on main like every other command.
         dispatch_async(dispatch_get_main_queue(), ^{
-        if (!albumURI.length) { SPLog(@"%@: album not found for %@", name, trackURI); return; }
+        if (!albumURI.length) { SPLog(@"%@: album not found for %@", name, trackURI); writeResult(@"none"); return; }
+        if ([name isEqualToString:@"album-uri"]) { writeResult(albumURI); return; }
         if ([name isEqualToString:@"album-open"]) { navigateTo(albumURI); return; }
-        // album-queue: Spotify exposes only append (enqueueTrackWithURI:), no true play-next,
-        // so the album's tracks are appended in order right after the current queue.
-        void (^queueTracks)(NSArray *) = ^(NSArray *items) {
-            NSMutableArray *tracks = [NSMutableArray array];
-            for (id item in items) {
-                NSString *u = [[item valueForKey:@"URI"] description];
-                if ([u hasPrefix:@"spotify:track:"]) [tracks addObject:u];
-            }
-            if (!tracks.count) { SPLog(@"album-queue: no tracks in %@", albumURI); writeResult(@"Spotify did not list the album's tracks on this version"); return; }
-            SPLog(@"album-queue: queueing %lu tracks from %@", (unsigned long)tracks.count, albumURI);
-            writeResult([NSString stringWithFormat:@"Queued %lu tracks after the current queue", (unsigned long)tracks.count]);
-            // The resolver answers on Spotify's thread; the enqueue calls go back on main like other commands.
-            dispatch_async(dispatch_get_main_queue(), ^{
-            id c = findController();
-            if (!c) { SPLog(@"album-queue: no playback controller"); return; }
-            for (NSString *t in tracks) {
-                NSURL *u = [NSURL URLWithString:t];
-                ((void (*)(id, SEL, id, id))objc_msgSend)(c, @selector(enqueueTrackWithURI:completionHandler:), u, ^(void *x) {
-                    SPLog(@"album-queue queued %@ (%p)", t, x);
-                });
-            }
-            });
-        };
-        // Resolve first (it answers on 8.x; browsing an album does not), then browse as a fallback.
-        __block BOOL answered = NO;
-        resolveContentWith(albumURI, ^(NSArray *items, id error) {
-            if (items.count) { answered = YES; queueTracks(items); return; }
-            SPLog(@"album-queue: resolve gave nothing (%@), trying browse", error);
-            browseChildrenWith(albumURI, NO, nil, ^(id response, id error) {
-                answered = YES;
-                queueTracks(contentItems(response));
-            });
-            // Some Spotify builds never answer a browse of an album; say so instead of doing nothing.
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(4.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-                if (!answered) writeResult(@"Spotify did not list the album's tracks on this version");
-            });
-        });
+        // Spotify has no way to queue an album (only single tracks), so the album is remembered and started
+        // when the current track changes, which is what "play it next" means in practice.
+        if ([pendingAlbum() isEqualToString:albumURI]) {
+            [[NSFileManager defaultManager] removeItemAtPath:pendingAlbumPath() error:nil];
+            SPLog(@"album-queue: cleared %@", albumURI);
+            writeResult(@"Album cleared, nothing will start next");
+            return;
+        }
+        SPLog(@"album-queue: will start %@ after this track", albumURI);
+        [albumURI writeToFile:pendingAlbumPath() atomically:YES encoding:NSUTF8StringEncoding error:nil];
+        writeResult(@"Album plays after this track (run it again to cancel)");
         });
     });
 }
@@ -981,7 +992,7 @@ static void runCommandLineUnsafe(NSString *line) {
         return;
     }
     if ([name isEqualToString:@"like"] || [name isEqualToString:@"liked"] || [name isEqualToString:@"playlist-has"] || [name isEqualToString:@"playlist-add"] || [name isEqualToString:@"playlist-remove"]) { runCollectionCommand(name, arg, 0); return; }
-    if ([name isEqualToString:@"album-open"] || [name isEqualToString:@"album-queue"]) { runAlbumCommand(name, 0); return; }
+    if ([name isEqualToString:@"album-open"] || [name isEqualToString:@"album-queue"] || [name isEqualToString:@"album-uri"]) { runAlbumCommand(name, 0); return; }
     if ([name isEqualToString:@"instances"]) { for (NSString *cn in [arg componentsSeparatedByString:@","]) findInstance(cn); return; }
     runControllerCommand(name, arg, 0);
 }
@@ -1147,6 +1158,7 @@ static void onPlayerStateUnsafe(id state) {
     if (stateChanged) postNote("com.goldenappleguy.zefyreborn.playstate", playing);
     SPLog(@"now playing: %@ playing=%d", uri, playing);
     if (trackChanged) writeRecents();
+    if (trackChanged) playPendingAlbum(state);
     if (trackChanged && uri.length) {
         id coll = findInstance(kCollectionClass);
         if (coll) {
@@ -1697,6 +1709,15 @@ static void handleSBCommand(NSString *line) {
     NSString *arg = sp.location == NSNotFound ? @"" : [line substringFromIndex:sp.location + 1];
     SPLog(@"sb command: %@", line);
     if ([name isEqualToString:@"ping"]) sbResult(@"pong");
+    else if ([name isEqualToString:@"openurl"]) {
+        // Opening a spotify: link from SpringBoard goes through the app's own URL handling and brings it forward.
+        Class ws = NSClassFromString(@"LSApplicationWorkspace");
+        id shared = ws ? ((id (*)(id, SEL))objc_msgSend)(ws, NSSelectorFromString(@"defaultWorkspace")) : nil;
+        SEL open = NSSelectorFromString(@"openURL:withOptions:");
+        BOOL ok = shared && [shared respondsToSelector:open] && ((BOOL (*)(id, SEL, id, id))objc_msgSend)(shared, open, [NSURL URLWithString:arg], nil);
+        SPLog(@"openurl %@ -> %d", arg, ok);
+        sbResult(ok ? @"ok" : @"failed");
+    }
     else if ([name isEqualToString:@"sleep"]) handleSleep(arg);
     else if ([name isEqualToString:@"relay"] || [name isEqualToString:@"relay-wait"] || [name isEqualToString:@"nowplaying"] || [name isEqualToString:@"spotify-debug"] || [name isEqualToString:@"spotify-log"]) handleRelay(name, arg);
     else if (debugEnabled() && [name isEqualToString:@"probe-classes"]) probeClasses(arg);
