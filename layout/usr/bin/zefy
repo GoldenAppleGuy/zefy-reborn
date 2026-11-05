@@ -140,14 +140,10 @@ use_relay=0
 if [ -z "$dir" ]; then
     use_relay=1
 elif [ $wait_result -ne 2 ]; then
-    # SpringBoard is the transport once it answers; remembering that skips a round trip on every later command.
-    if [ "$(cat $JB/tmp/zefyreborn.mode 2>/dev/null)" = relay ]; then
-        use_relay=1
-    else
-        rm -f $sb.sbresult
-        printf '%s\n' "ping" > $sb.sbcmd.tmp && mv $sb.sbcmd.tmp $sb.sbcmd
-        waitfor $sb.sbresult 1 && { use_relay=1; printf 'relay\n' > $JB/tmp/zefyreborn.mode 2>/dev/null; }
-    fi
+    # The ping also primes SpringBoard's watcher; without it the next command can sit unseen for seconds.
+    rm -f $sb.sbresult
+    printf '%s\n' "ping" > $sb.sbcmd.tmp && mv $sb.sbcmd.tmp $sb.sbcmd
+    waitfor $sb.sbresult 1 && use_relay=1
 fi
 if [ $use_relay -eq 1 ]; then
     ask() {   # ask <request> <seconds>: send a request to SpringBoard and wait for its answer

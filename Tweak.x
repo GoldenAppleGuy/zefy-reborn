@@ -1694,7 +1694,8 @@ static void handleRelay(NSString *name, NSString *arg) {
         __block BOOL queue = [name isEqualToString:@"album-queue"];
         waitSpotifyResult(^(NSString *album) {
             if (![album hasPrefix:@"spotify:album:"]) { sbResult(@"No album for the playing track"); return; }
-            sbOpenURLString(album);
+            // Opening the link can take seconds, so it is handed off and the reply does not wait for it.
+            dispatch_async(dispatch_get_main_queue(), ^{ sbOpenURLString(album); });
             if (!queue) { sbResult([@"Opened " stringByAppendingString:album]); return; }
             if (path) [NSFileManager.defaultManager removeItemAtPath:path error:nil];
             sendSpotifyCommandEx([@"zefyreborn:cmd album-queue " stringByAppendingString:album], NO);
