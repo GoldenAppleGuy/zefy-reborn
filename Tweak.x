@@ -196,7 +196,16 @@ static id findInstance(NSString *className) {
     return st.found;
 }
 
-static id findController(void) { return findInstance(kControllerClass); }
+static id findController(void) {
+    // The controller is a singleton, and scanning the heap for it costs seconds once Spotify has been running a
+    // while, so the first hit is kept. It lives as long as the app, so holding it is safe.
+    static id cached;
+    Class k = NSClassFromString(kControllerClass);
+    if (cached && object_getClass(cached) == k) return cached;
+    id found = findInstance(kControllerClass);
+    if (found) cached = found;
+    return found;
+}
 
 // ---- links ------------------------------------------------------------------------------------------------
 
@@ -1649,18 +1658,57 @@ static void relayWait(NSString *line, int attempt) {
     NSString *path = spotifyFile(@"zefyreborn.result");
     NSString *reply = path ? [NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:nil] : nil;
     if (reply.length) { sbResult([reply stringByTrimmingCharactersInSet:NSCharacterSet.newlineCharacterSet]); return; }
-    if (attempt >= 40) { sbResult(@"No answer from Spotify"); return; }
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ relayWait(line, attempt + 1); });
+    if (attempt >= 200) { sbResult(@"No answer from Spotify"); return; }   // 200 x 0.05 s
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.05 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ relayWait(line, attempt + 1); });
+}
+
+static BOOL sbOpenURLString(NSString *url);
+static BOOL sbOpenURLString(NSString *url) {
+    Class ws = NSClassFromString(@"LSApplicationWorkspace");
+    id shared = ws ? ((id (*)(id, SEL))objc_msgSend)(ws, NSSelectorFromString(@"defaultWorkspace")) : nil;
+    SEL open = NSSelectorFromString(@"openURL:withOptions:");
+    if (!shared || ![shared respondsToSelector:open]) return NO;
+    return ((BOOL (*)(id, SEL, id, id))objc_msgSend)(shared, open, [NSURL URLWithString:url], nil);
+}
+
+// Polls Spotify's reply file, then hands it to the block (nil when it never came).
+static void waitSpotifyResult(void (^then)(NSString *reply), int attempt) {
+    NSString *path = spotifyFile(@"zefyreborn.result");
+    NSString *reply = path ? [NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:nil] : nil;
+    reply = [reply stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    if (reply.length) { then(reply); return; }
+    if (attempt >= 160) { SPLog(@"album: no reply from Spotify"); then(nil); return; }
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.05 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ waitSpotifyResult(then, attempt + 1); });
 }
 
 static void handleRelay(NSString *name, NSString *arg) {
+    // Only skip the launch when Spotify is already awake (playing); a paused app may be suspended and would never
+    // see the command file. Launching on every call added a second to each command.
+    Class mc = NSClassFromString(@"SBMediaController");
+    BOOL awake = spotifyPID() > 1 && mc && [[mc sharedInstance] isPlaying];
+    if ([name isEqualToString:@"album-open"] || [name isEqualToString:@"album-queue"]) {
+        // One hop: ask Spotify for the album, open its page here, and for queue also arm it.
+        NSString *path = spotifyFile(@"zefyreborn.result");
+        if (path) [NSFileManager.defaultManager removeItemAtPath:path error:nil];
+        sendSpotifyCommandEx(@"zefyreborn:cmd album-uri", !awake);
+        __block BOOL queue = [name isEqualToString:@"album-queue"];
+        waitSpotifyResult(^(NSString *album) {
+            if (![album hasPrefix:@"spotify:album:"]) { sbResult(@"No album for the playing track"); return; }
+            sbOpenURLString(album);
+            if (!queue) { sbResult([@"Opened " stringByAppendingString:album]); return; }
+            if (path) [NSFileManager.defaultManager removeItemAtPath:path error:nil];
+            sendSpotifyCommandEx([@"zefyreborn:cmd album-queue " stringByAppendingString:album], NO);
+            waitSpotifyResult(^(NSString *reply) { sbResult(reply ?: @"No answer from Spotify"); }, 0);
+        }, 0);
+        return;
+    }
     if ([name isEqualToString:@"relay"]) {
-        sendSpotifyCommandEx(arg, YES);
+        sendSpotifyCommandEx(arg, !awake);
         sbResult(@"ok");
     } else if ([name isEqualToString:@"relay-wait"]) {
         NSString *path = spotifyFile(@"zefyreborn.result");
         if (path) [NSFileManager.defaultManager removeItemAtPath:path error:nil];   // a stale reply must not answer this request
-        sendSpotifyCommandEx(arg, YES);
+        sendSpotifyCommandEx(arg, !awake);
         relayWait(arg, 0);
     } else if (debugEnabled() && [name isEqualToString:@"spotify-debug"]) {
         // Debug: switch Spotify's own debug log on or off from SpringBoard (the shell cannot reach the folder on iOS 15).
@@ -1712,14 +1760,11 @@ static void handleSBCommand(NSString *line) {
     if ([name isEqualToString:@"ping"]) sbResult(@"pong");
     else if ([name isEqualToString:@"openurl"]) {
         // Opening a spotify: link from SpringBoard goes through the app's own URL handling and brings it forward.
-        Class ws = NSClassFromString(@"LSApplicationWorkspace");
-        id shared = ws ? ((id (*)(id, SEL))objc_msgSend)(ws, NSSelectorFromString(@"defaultWorkspace")) : nil;
-        SEL open = NSSelectorFromString(@"openURL:withOptions:");
-        BOOL ok = shared && [shared respondsToSelector:open] && ((BOOL (*)(id, SEL, id, id))objc_msgSend)(shared, open, [NSURL URLWithString:arg], nil);
+        BOOL ok = sbOpenURLString(arg);
         SPLog(@"openurl %@ -> %d", arg, ok);   // no reply: the BOOL is unreliable and a late answer would race the next command
     }
     else if ([name isEqualToString:@"sleep"]) handleSleep(arg);
-    else if ([name isEqualToString:@"relay"] || [name isEqualToString:@"relay-wait"] || [name isEqualToString:@"nowplaying"] || [name isEqualToString:@"spotify-debug"] || [name isEqualToString:@"spotify-log"]) handleRelay(name, arg);
+    else if ([name isEqualToString:@"relay"] || [name isEqualToString:@"relay-wait"] || [name isEqualToString:@"nowplaying"] || [name isEqualToString:@"spotify-debug"] || [name isEqualToString:@"spotify-log"] || [name isEqualToString:@"album-open"] || [name isEqualToString:@"album-queue"]) handleRelay(name, arg);
     else if (debugEnabled() && [name isEqualToString:@"probe-classes"]) probeClasses(arg);
     else if (debugEnabled() && [name isEqualToString:@"probe-class"]) probeClass(arg);
     else if (debugEnabled() && [name isEqualToString:@"probe-ivars"]) probeIvars(arg);

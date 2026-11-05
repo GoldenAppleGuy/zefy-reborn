@@ -52,6 +52,20 @@ mine() {
 fail() { echo "zefy: $*" >&2; exit 2; }
 num() { case "$1" in ''|*[!0-9.-]*) fail "'$1' is not a number" ;; esac; }
 mode() { case "$1" in 0|1|2) ;; *) fail "'$1' must be 0, 1 or 2" ;; esac; }
+# sleep is coarse here (0.05 s takes 300 ms) and forking a process per poll starves SpringBoard, so waiting for a
+# file is a builtin-only loop that only asks for the time every so often.
+waitfor() {   # waitfor <file> <seconds>
+    _end=$(( $(date +%s%N) + $2 * 1000000000 ))
+    _n=0
+    while [ ! -r "$1" ]; do
+        _n=$((_n+1))
+        if [ $_n -ge 20000 ]; then
+            _n=0
+            [ "$(date +%s%N)" -ge "$_end" ] && return 1
+        fi
+    done
+    return 0
+}
 
 foreground=0
 wait_result=0
@@ -63,11 +77,7 @@ case "$1" in
         # SpringBoard holds the timer, so the request goes to it, not to Spotify.
         rm -f $JB/tmp/zefyreborn.sbresult
         printf '%s\n' "sleep $2" > $JB/tmp/zefyreborn.sbcmd.tmp && mv $JB/tmp/zefyreborn.sbcmd.tmp $JB/tmp/zefyreborn.sbcmd
-        n=0
-        while [ $n -lt 25 ]; do
-            if [ -r $JB/tmp/zefyreborn.sbresult ]; then cat $JB/tmp/zefyreborn.sbresult; exit 0; fi
-            sleep 0.2; n=$((n+1))
-        done
+        waitfor $JB/tmp/zefyreborn.sbresult 5 && { cat $JB/tmp/zefyreborn.sbresult; exit 0; }
         echo "SpringBoard did not answer (respring after installing)"; exit 1 ;;
     --status) wait_result=2 ;;
     --playlist|--album|--artist|--find)
@@ -96,8 +106,8 @@ case "$1" in
     --randomalbum) line="zefyreborn:cmd random albums" ;;
     --likedsongs) line="zefyreborn:cmd likedsongs" ;;
     --queue) [ $# -eq 2 ] || fail "--queue needs a track uri"; line="zefyreborn:cmd queue $2" ;;
-    --album-open) album_open=1; line="zefyreborn:cmd album-uri"; wait_result=1 ;;
-    --album-queue) album_queue=1; line="zefyreborn:cmd album-uri"; wait_result=1 ;;
+    --album-open) album_open=1; line="zefyreborn:cmd album-uri"; sbline="album-open"; wait_result=1 ;;
+    --album-queue) album_queue=1; line="zefyreborn:cmd album-uri"; sbline="album-queue"; wait_result=1 ;;
     -*) fail "unknown option $1 (see -h)" ;;
     *) [ $# -eq 1 ] || fail "one link at a time"; line="$1"; foreground=1 ;;
 esac
@@ -108,9 +118,9 @@ cache=$JB/tmp/zefyreborn.dir
 dir=
 if [ -r "$cache" ]; then
     d=$(cat "$cache")
-    if [ -d "$d/Documents" ] && grep -q com.spotify.client "$d/.com.apple.mobile_container_manager.metadata.plist" 2>/dev/null; then
-        dir="$d/Documents"
-    fi
+    # The cached folder is trusted as-is: checking it costs 15 s here on iOS 15 when the metadata cannot be read,
+    # and the ping below decides whether SpringBoard has to do the writing anyway.
+    [ -d "$d/Documents" ] && dir="$d/Documents"
 fi
 if [ -z "$dir" ]; then
     for d in /var/mobile/Containers/Data/Application/*; do
@@ -130,24 +140,20 @@ use_relay=0
 if [ -z "$dir" ]; then
     use_relay=1
 elif [ $wait_result -ne 2 ]; then
-    rm -f $sb.sbresult
-    printf '%s\n' "ping" > $sb.sbcmd.tmp && mv $sb.sbcmd.tmp $sb.sbcmd
-    n=0
-    while [ $n -lt 10 ]; do
-        [ -r $sb.sbresult ] && { use_relay=1; break; }
-        sleep 0.1; n=$((n+1))
-    done
+    # SpringBoard is the transport once it answers; remembering that skips a round trip on every later command.
+    if [ "$(cat $JB/tmp/zefyreborn.mode 2>/dev/null)" = relay ]; then
+        use_relay=1
+    else
+        rm -f $sb.sbresult
+        printf '%s\n' "ping" > $sb.sbcmd.tmp && mv $sb.sbcmd.tmp $sb.sbcmd
+        waitfor $sb.sbresult 1 && { use_relay=1; printf 'relay\n' > $JB/tmp/zefyreborn.mode 2>/dev/null; }
+    fi
 fi
 if [ $use_relay -eq 1 ]; then
     ask() {   # ask <request> <seconds>: send a request to SpringBoard and wait for its answer
         rm -f $sb.sbresult
         printf '%s\n' "$1" > $sb.sbcmd.tmp && mv $sb.sbcmd.tmp $sb.sbcmd
-        n=0; max=$(( $2 * 5 ))
-        while [ $n -lt $max ]; do
-            [ -r $sb.sbresult ] && return 0
-            sleep 0.2; n=$((n+1))
-        done
-        return 1
+        waitfor $sb.sbresult $2 || { rm -f $JB/tmp/zefyreborn.mode; return 1; }
     }
     if [ $wait_result -eq 2 ]; then
         ask "nowplaying" 3 || { echo "SpringBoard did not answer (is the tweak loaded there?)"; exit 1; }
@@ -164,22 +170,8 @@ if [ $use_relay -eq 1 ]; then
     fi
     if [ $wait_result -eq 1 ]; then
         if [ $album_open -eq 1 ] || [ $album_queue -eq 1 ]; then
-            if ask "relay-wait $line" 10; then
-                a=$(cat $sb.sbresult)
-                case "$a" in
-                    spotify:album:*)
-                        # SpringBoard opens the link the way a tapped link arrives, which shows the page and brings Spotify forward.
-                        # Its answer is not waited for, so a late one cannot be mistaken for the next command's reply.
-                        rm -f $sb.sbresult
-                        printf '%s\n' "openurl $a" > $sb.sbcmd.tmp && mv $sb.sbcmd.tmp $sb.sbcmd
-                        sleep 1
-                        rm -f $sb.sbresult   # openurl does not answer, so drop anything stale before the next request
-                        if [ $album_queue -eq 1 ]; then
-                            ask "relay-wait zefyreborn:cmd album-queue $a" 10 && cat $sb.sbresult || echo "No answer from Spotify"
-                        else echo "Opened $a"; fi ;;
-                    *) echo "No album for the playing track" ;;
-                esac
-            else echo "No answer from Spotify"; fi
+            # SpringBoard resolves the album, opens its page and (for queue) arms it, so this is one round trip.
+            if ask "$sbline" 15; then cat $sb.sbresult; else echo "SpringBoard did not answer (is the tweak loaded there?)"; fi
             exit 0
         fi
         ask "relay-wait $line" 10 && cat $sb.sbresult || echo "No answer from Spotify"
@@ -222,30 +214,21 @@ if [ $foreground -eq 1 ] || ! ps -ax -o comm | grep -q "Spotify.app/Spotify"; th
     $JB/usr/bin/uiopen --bundleid com.spotify.client
 fi
 if [ $wait_result -eq 1 ]; then
-    n=0
-    while [ $n -lt 40 ]; do
-        if [ -r "$dir/zefyreborn.result" ]; then
-            if [ $album_open -eq 0 ] && [ $album_queue -eq 0 ]; then cat "$dir/zefyreborn.result"; exit 0; fi
-            a=$(cat "$dir/zefyreborn.result")
-            case "$a" in
-                spotify:album:*)
-                    rm -f $sb.sbresult
-                    printf '%s\n' "openurl $a" > $sb.sbcmd.tmp 2>/dev/null && mv $sb.sbcmd.tmp $sb.sbcmd 2>/dev/null
-                    if [ $album_queue -eq 1 ]; then
-                        rm -f "$dir/zefyreborn.result"
-                        printf '%s\n' "zefyreborn:cmd album-queue $a" > "$dir/zefyreborn.cmd.tmp" && mv "$dir/zefyreborn.cmd.tmp" "$dir/zefyreborn.cmd"
-                        m=0
-                        while [ $m -lt 40 ]; do
-                            [ -r "$dir/zefyreborn.result" ] && { cat "$dir/zefyreborn.result"; exit 0; }
-                            sleep 0.2; m=$((m+1))
-                        done
-                        echo "No answer from Spotify"
-                    else echo "Opened $a"; fi ;;
-                *) echo "No album for the playing track" ;;
-            esac
-            exit 0
-        fi
-        sleep 0.2; n=$((n+1))
-    done
+    if waitfor "$dir/zefyreborn.result" 8; then
+        if [ $album_open -eq 0 ] && [ $album_queue -eq 0 ]; then cat "$dir/zefyreborn.result"; exit 0; fi
+        a=$(cat "$dir/zefyreborn.result")
+        case "$a" in
+            spotify:album:*)
+                rm -f $sb.sbresult
+                printf '%s\n' "openurl $a" > $sb.sbcmd.tmp 2>/dev/null && mv $sb.sbcmd.tmp $sb.sbcmd 2>/dev/null
+                if [ $album_queue -eq 1 ]; then
+                    rm -f "$dir/zefyreborn.result"
+                    printf '%s\n' "zefyreborn:cmd album-queue $a" > "$dir/zefyreborn.cmd.tmp" && mv "$dir/zefyreborn.cmd.tmp" "$dir/zefyreborn.cmd"
+                    waitfor "$dir/zefyreborn.result" 8 && cat "$dir/zefyreborn.result" || echo "No answer from Spotify"
+                else echo "Opened $a"; fi ;;
+            *) echo "No album for the playing track" ;;
+        esac
+        exit 0
+    fi
     echo "No answer from Spotify"
 fi
