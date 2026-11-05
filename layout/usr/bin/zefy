@@ -19,8 +19,10 @@ Usage: zefy [option] [value]
   --seek <sec>     move the position by seconds, negative goes back
   --queue <uri>    add a track to the queue (spotify:track:<id>)
   --album-open     open the album page of the playing track
-  --album-queue    open the playing track's album page and play the album after this track; if the playing song is
-                   the album's first one it starts at the second (run again to cancel)
+  --album-queue [--no-open] [--no-skip]
+                   open the playing track's album page and play the album after this track; if the playing song is
+                   the album's first one it starts at the second. --no-open skips opening the page, --no-skip plays
+                   the album from its first song anyway. Run it again to cancel.
   -k [0|1|2]       like the playing track: 0 unlike, 1 like (default), 2 toggle
   -a <playlist>    add the playing track to a playlist (spotify:playlist:<id>)
   -d <playlist>    remove the playing track from a playlist
@@ -108,7 +110,18 @@ case "$1" in
     --likedsongs) line="zefyreborn:cmd likedsongs" ;;
     --queue) [ $# -eq 2 ] || fail "--queue needs a track uri"; line="zefyreborn:cmd queue $2" ;;
     --album-open) album_open=1; line="zefyreborn:cmd album-uri"; sbline="album-open"; wait_result=1 ;;
-    --album-queue) album_queue=1; line="zefyreborn:cmd album-uri"; sbline="album-queue"; wait_result=1 ;;
+    --album-queue)
+        album_queue=1; sbline="album-queue"; wait_result=1
+        shift
+        while [ $# -gt 0 ]; do
+            case "$1" in
+                --no-open) sbline="$sbline noopen" ;;
+                --no-skip) sbline="$sbline noskip" ;;
+                *) fail "unknown flag for --album-queue: $1" ;;
+            esac
+            shift
+        done
+        line="zefyreborn:cmd album-uri" ;;
     -*) fail "unknown option $1 (see -h)" ;;
     *) [ $# -eq 1 ] || fail "one link at a time"; line="$1"; foreground=1 ;;
 esac

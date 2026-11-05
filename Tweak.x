@@ -323,6 +323,7 @@ static void startPlayback(NSString *uri, BOOL shuffle) {
   @try {
     id c = findController();
     if (!c) { SPLog(@"play %@: no playback controller", uri); return; }
+    if (!uri.length || ![NSURL URLWithString:uri]) { SPLog(@"play: bad uri %@", uri); return; }
     BOOL container = [uri hasPrefix:@"spotify:playlist:"] || [uri hasPrefix:@"spotify:album:"] || [uri hasPrefix:@"spotify:artist:"];
     SPLog(@"play %@ shuffle=%d", uri, shuffle);
     playItem(c, container ? contentItemForURI(uri) : nil, uri, shuffle);
@@ -642,6 +643,7 @@ static id makeContentOptions(id cc) {
 static void resolveContentWith(NSString *uri, void (^completion)(NSArray *items, id error)) {
     id cc = findInstance(kContentClass);
     SEL resolve = @selector(resolveContentWithURI:options:withCompletionHandler:);
+    if (!uri.length || ![NSURL URLWithString:uri]) { SPLog(@"resolve: bad uri %@", uri); completion(@[], nil); return; }
     if (!cc || ![cc respondsToSelector:resolve]) { SPLog(@"resolve %@: no content resolver", uri); completion(@[], nil); return; }
     id opts = makeContentOptions(cc);
     if (!opts) { SPLog(@"resolve %@: no option builder", uri); completion(@[], nil); return; }
@@ -799,8 +801,11 @@ static void runAlbumCommand(NSString *name, NSString *arg, int attempt) {
         else SPLog(@"%@: no playback controller", name);
         return;
     }
-    BOOL givenAlbum = [arg hasPrefix:@"spotify:album:"];
-    NSString *trackURI = givenAlbum ? arg : currentTrackURI(playback).absoluteString;
+    NSArray *parts = [arg componentsSeparatedByString:@" "];
+    NSString *albumArg = parts.firstObject ?: @"";
+    BOOL noSkip = [arg rangeOfString:@"noskip"].location != NSNotFound;
+    BOOL givenAlbum = [albumArg hasPrefix:@"spotify:album:"];
+    NSString *trackURI = givenAlbum ? albumArg : currentTrackURI(playback).absoluteString;
     if (!trackURI.length) {
         // Just after a background launch the player state can be empty for a few seconds.
         if (attempt < 40) dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ runAlbumCommand(name, arg, attempt + 1); });
@@ -834,6 +839,7 @@ static void runAlbumCommand(NSString *name, NSString *arg, int attempt) {
                             [[meta objectForKey:@"album_disc_number"] intValue] <= 1;
             }
         } @catch (NSException *e) {}
+        if (firstSong && noSkip) { SPLog(@"album-queue: the first song would repeat, but skipping was turned off"); firstSong = NO; }
         if (firstSong) SPLog(@"album-queue: %@ is the album's first song, so it will be skipped", trackURI);
         NSString *text = firstSong ? [albumURI stringByAppendingString:@"\nskipfirst"] : albumURI;
         [text writeToFile:pendingAlbumPath() atomically:YES encoding:NSUTF8StringEncoding error:nil];
@@ -1773,13 +1779,17 @@ static void handleRelay(NSString *name, NSString *arg) {
         if (path) [NSFileManager.defaultManager removeItemAtPath:path error:nil];
         sendSpotifyCommandEx(@"zefyreborn:cmd album-uri", !awake);
         __block BOOL queue = [name isEqualToString:@"album-queue"];
+        BOOL openPage = [arg rangeOfString:@"noopen"].location == NSNotFound;
+        BOOL noSkip = [arg rangeOfString:@"noskip"].location != NSNotFound;
         waitSpotifyResult(^(NSString *album) {
             if (![album hasPrefix:@"spotify:album:"]) { sbResult(@"No album for the playing track"); return; }
             // Spotify navigates to it itself; the system openURL path took ten seconds here.
-            sendSpotifyCommandEx([@"zefyreborn:cmd album-open " stringByAppendingString:album], YES);
+            if (openPage) sendSpotifyCommandEx([@"zefyreborn:cmd album-open " stringByAppendingString:album], YES);
             if (!queue) { sbResult([@"Opened " stringByAppendingString:album]); return; }
             if (path) [NSFileManager.defaultManager removeItemAtPath:path error:nil];
-            sendSpotifyCommandEx([@"zefyreborn:cmd album-queue " stringByAppendingString:album], NO);
+            NSString *command = [@"zefyreborn:cmd album-queue " stringByAppendingString:album];
+            if (noSkip) command = [command stringByAppendingString:@" noskip"];
+            sendSpotifyCommandEx(command, NO);
             waitSpotifyResult(^(NSString *reply) { sbResult(reply ?: @"No answer from Spotify"); }, 0);
         }, 0);
         return;
