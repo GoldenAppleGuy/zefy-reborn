@@ -696,8 +696,43 @@ static NSString *pendingAlbumPath(void) {
 
 static NSString *pendingAlbum(void) {
     NSString *text = [NSString stringWithContentsOfFile:pendingAlbumPath() encoding:NSUTF8StringEncoding error:nil];
-    text = [text stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
-    return [text hasPrefix:@"spotify:album:"] ? text : nil;
+    NSString *first = [[text componentsSeparatedByString:@"\n"] firstObject];
+    first = [first stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    return [first hasPrefix:@"spotify:album:"] ? first : nil;
+}
+
+// The song that armed the album was its first one, so starting the album would replay it.
+static BOOL pendingSkipFirst(void) {
+    NSString *text = [NSString stringWithContentsOfFile:pendingAlbumPath() encoding:NSUTF8StringEncoding error:nil];
+    return [text containsString:@"skipfirst"];
+}
+
+// The album can restart on the very song that armed it, so no track-change event arrives to hang the skip on.
+// This watches the player state instead and skips the first song once it is really playing.
+static void skipFirstWhenPlaying(NSString *album, int attempts) {
+    if (attempts <= 0) { SPLog(@"pending album: gave up skipping the first song"); return; }
+    id c = findController();
+    id ps = c ? ((id (*)(id, SEL))objc_msgSend)(c, @selector(playerState)) : nil;
+    NSString *playing = nil;
+    int number = 0;
+    @try {
+        id meta = [[ps valueForKey:@"track"] valueForKey:@"metadata"];
+        if ([meta isKindOfClass:NSDictionary.class]) {
+            playing = extractAlbumURI([[meta objectForKey:@"album_uri"] description]);
+            number = [[meta objectForKey:@"album_track_number"] intValue];
+        }
+    } @catch (NSException *e) {}
+    if ([playing isEqualToString:album] && number > 1) { SPLog(@"pending album: already past its first song"); return; }
+    if ([playing isEqualToString:album] && number == 1) {
+        SPLog(@"pending album: skipping its first song");
+        ((void (*)(id, SEL, id))objc_msgSend)(c, @selector(skipToNextTrackWithCompletionHandler:), ^(void *x) {
+            SPLog(@"pending album: skipped the first song (%p)", x);
+        });
+        return;
+    }
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        skipFirstWhenPlaying(album, attempts - 1);
+    });
 }
 
 // Called from the player state hook when the track changes. The album of the new track is compared with the
@@ -705,6 +740,7 @@ static NSString *pendingAlbum(void) {
 static void playPendingAlbum(id state) {
     NSString *pending = pendingAlbum();
     if (!pending) return;
+    BOOL skipFirst = pendingSkipFirst();   // read before the file is removed below
     NSString *nowPlayingAlbum = nil;
     @try {
         id track = [state valueForKey:@"track"], meta = [track valueForKey:@"metadata"];
@@ -715,7 +751,15 @@ static void playPendingAlbum(id state) {
     SPLog(@"pending album: starting %@ after the track change", pending);
     id c = findController();
     if (!c) { SPLog(@"pending album: no playback controller"); return; }
-    void (^start)(void) = ^{ startPlayback(pending, NO); };
+    void (^start)(void) = ^{
+        startPlayback(pending, NO);
+        if (skipFirst) {
+            // Wait for the album to actually be playing before stepping past its first song.
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                skipFirstWhenPlaying(pending, 6);
+            });
+        }
+    };
     // Shuffle would start the album on a random song, so turn it off first.
     @try {
         ((void (*)(id, SEL, id))objc_msgSend)(c, @selector(disableShuffleWithCompletionHandler:), ^(void *x) {
@@ -779,8 +823,22 @@ static void runAlbumCommand(NSString *name, NSString *arg, int attempt) {
             return;
         }
         SPLog(@"album-queue: will start %@ after this track", albumURI);
-        [albumURI writeToFile:pendingAlbumPath() atomically:YES encoding:NSUTF8StringEncoding error:nil];
-        writeResult(@"Album plays after this track (run it again to cancel)");
+        // If the song playing now is the album's first one, starting the album would play it twice.
+        BOOL firstSong = NO;
+        @try {
+            id playback = findController();
+            id ps = playback ? ((id (*)(id, SEL))objc_msgSend)(playback, @selector(playerState)) : nil;
+            id meta = [[ps valueForKey:@"track"] valueForKey:@"metadata"];
+            if ([meta isKindOfClass:NSDictionary.class]) {
+                firstSong = [[meta objectForKey:@"album_track_number"] intValue] == 1 &&
+                            [[meta objectForKey:@"album_disc_number"] intValue] <= 1;
+            }
+        } @catch (NSException *e) {}
+        if (firstSong) SPLog(@"album-queue: %@ is the album's first song, so it will be skipped", trackURI);
+        NSString *text = firstSong ? [albumURI stringByAppendingString:@"\nskipfirst"] : albumURI;
+        [text writeToFile:pendingAlbumPath() atomically:YES encoding:NSUTF8StringEncoding error:nil];
+        writeResult(firstSong ? @"Album plays after this track, from its second song (run it again to cancel)"
+                              : @"Album plays after this track (run it again to cancel)");
         });
     };
     if (givenAlbum) handle(trackURI); else resolveAlbumForTrack(trackURI, handle);

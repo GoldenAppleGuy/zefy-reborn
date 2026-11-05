@@ -19,7 +19,8 @@ Usage: zefy [option] [value]
   --seek <sec>     move the position by seconds, negative goes back
   --queue <uri>    add a track to the queue (spotify:track:<id>)
   --album-open     open the album page of the playing track
-  --album-queue    open the playing track's album page and play the album after this track (run again to cancel)
+  --album-queue    open the playing track's album page and play the album after this track; if the playing song is
+                   the album's first one it starts at the second (run again to cancel)
   -k [0|1|2]       like the playing track: 0 unlike, 1 like (default), 2 toggle
   -a <playlist>    add the playing track to a playlist (spotify:playlist:<id>)
   -d <playlist>    remove the playing track from a playlist
