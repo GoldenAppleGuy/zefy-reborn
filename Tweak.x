@@ -716,24 +716,24 @@ static void playPendingAlbum(id state) {
     } @catch (NSException *e) { SPLog(@"pending album: shuffle off failed: %@", e); dispatch_async(dispatch_get_main_queue(), start); }
 }
 
-static void runAlbumCommand(NSString *name, int attempt) {
+static void runAlbumCommand(NSString *name, NSString *arg, int attempt) {
     id playback = findController();
     if (!playback) {
-        if (attempt < 40) dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ runAlbumCommand(name, attempt + 1); });
+        if (attempt < 40) dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ runAlbumCommand(name, arg, attempt + 1); });
         else SPLog(@"%@: no playback controller", name);
         return;
     }
-    NSURL *track = currentTrackURI(playback);
-    if (!track) {
+    BOOL givenAlbum = [arg hasPrefix:@"spotify:album:"];
+    NSString *trackURI = givenAlbum ? arg : currentTrackURI(playback).absoluteString;
+    if (!trackURI.length) {
         // Just after a background launch the player state can be empty for a few seconds.
-        if (attempt < 40) dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ runAlbumCommand(name, attempt + 1); });
+        if (attempt < 40) dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ runAlbumCommand(name, arg, attempt + 1); });
         else SPLog(@"%@: nothing is playing", name);
         return;
     }
-    NSString *trackURI = track.absoluteString;
-    SPLog(@"%@ track %@", name, trackURI);
-    resolveAlbumForTrack(trackURI, ^(NSString *albumURI) {
-        // The resolver answers on Spotify's thread; navigate and enqueue on main like every other command.
+    SPLog(@"%@ %@", name, trackURI);
+    void (^handle)(NSString *) = ^(NSString *albumURI) {
+        // The resolver answers on Spotify's thread; the work goes back on main like every other command.
         dispatch_async(dispatch_get_main_queue(), ^{
         if (!albumURI.length) { SPLog(@"%@: album not found for %@", name, trackURI); writeResult(@"none"); return; }
         if ([name isEqualToString:@"album-uri"]) { writeResult(albumURI); return; }
@@ -750,7 +750,8 @@ static void runAlbumCommand(NSString *name, int attempt) {
         [albumURI writeToFile:pendingAlbumPath() atomically:YES encoding:NSUTF8StringEncoding error:nil];
         writeResult(@"Album plays after this track (run it again to cancel)");
         });
-    });
+    };
+    if (givenAlbum) handle(trackURI); else resolveAlbumForTrack(trackURI, handle);
 }
 
 // ---- browsing Spotify's own content tree (the one CarPlay uses) -------------------------------------------
@@ -992,7 +993,7 @@ static void runCommandLineUnsafe(NSString *line) {
         return;
     }
     if ([name isEqualToString:@"like"] || [name isEqualToString:@"liked"] || [name isEqualToString:@"playlist-has"] || [name isEqualToString:@"playlist-add"] || [name isEqualToString:@"playlist-remove"]) { runCollectionCommand(name, arg, 0); return; }
-    if ([name isEqualToString:@"album-open"] || [name isEqualToString:@"album-queue"] || [name isEqualToString:@"album-uri"]) { runAlbumCommand(name, 0); return; }
+    if ([name isEqualToString:@"album-open"] || [name isEqualToString:@"album-queue"] || [name isEqualToString:@"album-uri"]) { runAlbumCommand(name, arg, 0); return; }
     if ([name isEqualToString:@"instances"]) { for (NSString *cn in [arg componentsSeparatedByString:@","]) findInstance(cn); return; }
     runControllerCommand(name, arg, 0);
 }
@@ -1715,8 +1716,7 @@ static void handleSBCommand(NSString *line) {
         id shared = ws ? ((id (*)(id, SEL))objc_msgSend)(ws, NSSelectorFromString(@"defaultWorkspace")) : nil;
         SEL open = NSSelectorFromString(@"openURL:withOptions:");
         BOOL ok = shared && [shared respondsToSelector:open] && ((BOOL (*)(id, SEL, id, id))objc_msgSend)(shared, open, [NSURL URLWithString:arg], nil);
-        SPLog(@"openurl %@ -> %d", arg, ok);
-        sbResult(ok ? @"ok" : @"failed");
+        SPLog(@"openurl %@ -> %d", arg, ok);   // no reply: the BOOL is unreliable and a late answer would race the next command
     }
     else if ([name isEqualToString:@"sleep"]) handleSleep(arg);
     else if ([name isEqualToString:@"relay"] || [name isEqualToString:@"relay-wait"] || [name isEqualToString:@"nowplaying"] || [name isEqualToString:@"spotify-debug"] || [name isEqualToString:@"spotify-log"]) handleRelay(name, arg);

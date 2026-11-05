@@ -4,7 +4,7 @@ Private build. Versions are listed newest first.
 
 ## 1.0.3
 - `zefy --album-open` opens the album page of the currently playing track without playing anything. The album comes from the track's own metadata, so it works with Spotify 8.x too, and the page is opened by SpringBoard so it comes to the screen.
-- `zefy --album-queue` plays the playing track's album after the current track. Spotify cannot queue an album (only single tracks), so the album is remembered and started when the track changes, with shuffle off. Running it again cancels. It works on every Spotify version, including 8.x, because it needs no album track list.
+- `zefy --album-queue` opens the playing track's album page and plays that album after the current track. Spotify cannot queue an album (only single tracks), so the album is remembered and started when the track changes, with shuffle off. Running it again cancels. It works on every Spotify version, including 8.x, because it needs no album track list.
 - Both are also in the RemoteCompanion add-on as Open Album and Queue Album.
 - `zefy <link>` and `zefy -n <link>` now bring Spotify to the front on iOS 15 before handing it the page, so the page actually comes to the screen.
 

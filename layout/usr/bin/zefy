@@ -19,7 +19,7 @@ Usage: zefy [option] [value]
   --seek <sec>     move the position by seconds, negative goes back
   --queue <uri>    add a track to the queue (spotify:track:<id>)
   --album-open     open the album page of the playing track
-  --album-queue    play the playing track's album after this track (run again to cancel)
+  --album-queue    open the playing track's album page and play the album after this track (run again to cancel)
   -k [0|1|2]       like the playing track: 0 unlike, 1 like (default), 2 toggle
   -a <playlist>    add the playing track to a playlist (spotify:playlist:<id>)
   -d <playlist>    remove the playing track from a playlist
@@ -56,6 +56,7 @@ mode() { case "$1" in 0|1|2) ;; *) fail "'$1' must be 0, 1 or 2" ;; esac; }
 foreground=0
 wait_result=0
 album_open=0
+album_queue=0
 case "$1" in
     --sleep)
         [ $# -eq 2 ] || fail "--sleep needs minutes, off or status"
@@ -96,7 +97,7 @@ case "$1" in
     --likedsongs) line="zefyreborn:cmd likedsongs" ;;
     --queue) [ $# -eq 2 ] || fail "--queue needs a track uri"; line="zefyreborn:cmd queue $2" ;;
     --album-open) album_open=1; line="zefyreborn:cmd album-uri"; wait_result=1 ;;
-    --album-queue) line="zefyreborn:cmd album-queue"; wait_result=1 ;;
+    --album-queue) album_queue=1; line="zefyreborn:cmd album-uri"; wait_result=1 ;;
     -*) fail "unknown option $1 (see -h)" ;;
     *) [ $# -eq 1 ] || fail "one link at a time"; line="$1"; foreground=1 ;;
 esac
@@ -162,14 +163,20 @@ if [ $use_relay -eq 1 ]; then
         exit 0
     fi
     if [ $wait_result -eq 1 ]; then
-        if [ $album_open -eq 1 ]; then
+        if [ $album_open -eq 1 ] || [ $album_queue -eq 1 ]; then
             if ask "relay-wait $line" 10; then
                 a=$(cat $sb.sbresult)
                 case "$a" in
                     spotify:album:*)
                         # SpringBoard opens the link the way a tapped link arrives, which shows the page and brings Spotify forward.
-                        if ask "openurl $a" 3 && [ "$(cat $sb.sbresult)" = ok ]; then echo "Opened $a"
-                        else $JB/usr/bin/uiopen --url "$a" >/dev/null 2>&1; echo "Opened $a"; fi ;;
+                        # Its answer is not waited for, so a late one cannot be mistaken for the next command's reply.
+                        rm -f $sb.sbresult
+                        printf '%s\n' "openurl $a" > $sb.sbcmd.tmp && mv $sb.sbcmd.tmp $sb.sbcmd
+                        sleep 1
+                        rm -f $sb.sbresult   # openurl does not answer, so drop anything stale before the next request
+                        if [ $album_queue -eq 1 ]; then
+                            ask "relay-wait zefyreborn:cmd album-queue $a" 10 && cat $sb.sbresult || echo "No answer from Spotify"
+                        else echo "Opened $a"; fi ;;
                     *) echo "No album for the playing track" ;;
                 esac
             else echo "No answer from Spotify"; fi
@@ -218,14 +225,22 @@ if [ $wait_result -eq 1 ]; then
     n=0
     while [ $n -lt 40 ]; do
         if [ -r "$dir/zefyreborn.result" ]; then
-            if [ $album_open -eq 0 ]; then cat "$dir/zefyreborn.result"; exit 0; fi
+            if [ $album_open -eq 0 ] && [ $album_queue -eq 0 ]; then cat "$dir/zefyreborn.result"; exit 0; fi
             a=$(cat "$dir/zefyreborn.result")
             case "$a" in
                 spotify:album:*)
                     rm -f $sb.sbresult
                     printf '%s\n' "openurl $a" > $sb.sbcmd.tmp 2>/dev/null && mv $sb.sbcmd.tmp $sb.sbcmd 2>/dev/null
-                    $JB/usr/bin/uiopen --url "$a" >/dev/null 2>&1
-                    echo "Opened $a" ;;
+                    if [ $album_queue -eq 1 ]; then
+                        rm -f "$dir/zefyreborn.result"
+                        printf '%s\n' "zefyreborn:cmd album-queue $a" > "$dir/zefyreborn.cmd.tmp" && mv "$dir/zefyreborn.cmd.tmp" "$dir/zefyreborn.cmd"
+                        m=0
+                        while [ $m -lt 40 ]; do
+                            [ -r "$dir/zefyreborn.result" ] && { cat "$dir/zefyreborn.result"; exit 0; }
+                            sleep 0.2; m=$((m+1))
+                        done
+                        echo "No answer from Spotify"
+                    else echo "Opened $a"; fi ;;
                 *) echo "No album for the playing track" ;;
             esac
             exit 0

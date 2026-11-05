@@ -47,7 +47,7 @@ zefy --pause | --resume
 zefy --seek <seconds>   move the position, negative goes back
 zefy --queue <uri>      add a track to the queue
 zefy --album-open       open the album page of the playing track
-zefy --album-queue      play the playing track's album after this track (run again to cancel)
+zefy --album-queue      open the playing track's album page and play that album after this track (run again to cancel)
 zefy -k [0|1|2]         like the playing track: 0 unlike, 1 like, 2 toggle (no value = 1)
 zefy -a <playlist-uri>  add the playing track to a playlist
 zefy -d <playlist-uri>  remove the playing track from a playlist
