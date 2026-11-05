@@ -754,6 +754,12 @@ static BOOL pendingSkipFirst(void) {
     return [text containsString:@"skipfirst"];
 }
 
+// --shuffle plays the album shuffled, which the album's own play button does not do.
+static BOOL pendingAlbumShuffle(void) {
+    NSString *text = [NSString stringWithContentsOfFile:pendingAlbumPath() encoding:NSUTF8StringEncoding error:nil];
+    return [text containsString:@"shuffle"];
+}
+
 // The album can restart on the very song that armed it, so no track-change event arrives to hang the skip on.
 // This watches the player state instead and skips the first song once it is really playing.
 static void skipFirstWhenPlaying(NSString *album, int attempts) {
@@ -788,6 +794,7 @@ static void playPendingAlbum(id state) {
     NSString *pending = pendingAlbum();
     if (!pending) return;
     BOOL skipFirst = pendingSkipFirst();   // read before the file is removed below
+    BOOL shuffle = pendingAlbumShuffle();
     NSString *nowPlayingAlbum = nil;
     @try {
         id track = [state valueForKey:@"track"], meta = [track valueForKey:@"metadata"];
@@ -795,11 +802,11 @@ static void playPendingAlbum(id state) {
     } @catch (NSException *e) {}
     [[NSFileManager defaultManager] removeItemAtPath:pendingAlbumPath() error:nil];
     if ([pending isEqualToString:nowPlayingAlbum ?: @""]) { SPLog(@"pending album: %@ is already playing, nothing to do", pending); return; }
-    SPLog(@"pending album: starting %@ after the track change", pending);
+    SPLog(@"pending album: starting %@ after the track change (shuffle %@)", pending, shuffle ? @"on" : @"off");
     id c = findController();
     if (!c) { SPLog(@"pending album: no playback controller"); return; }
     void (^start)(void) = ^{
-        startPlayback(pending, NO);
+        startPlayback(pending, shuffle);
         if (skipFirst) {
             // Wait for the album to actually be playing before stepping past its first song.
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
@@ -807,13 +814,14 @@ static void playPendingAlbum(id state) {
             });
         }
     };
-    // Shuffle would start the album on a random song, so turn it off first.
+    // A shuffled album starts on a random song; otherwise turn shuffle off so it starts at the top.
     @try {
-        ((void (*)(id, SEL, id))objc_msgSend)(c, @selector(disableShuffleWithCompletionHandler:), ^(void *x) {
-            SPLog(@"pending album: shuffle off (%p)", x);
+        SEL shuffleSel = shuffle ? @selector(enableShuffleWithCompletionHandler:) : @selector(disableShuffleWithCompletionHandler:);
+        ((void (*)(id, SEL, id))objc_msgSend)(c, shuffleSel, ^(void *x) {
+            SPLog(@"pending album: shuffle %@ (%p)", shuffle ? @"on" : @"off", x);
             dispatch_async(dispatch_get_main_queue(), start);
         });
-    } @catch (NSException *e) { SPLog(@"pending album: shuffle off failed: %@", e); dispatch_async(dispatch_get_main_queue(), start); }
+    } @catch (NSException *e) { SPLog(@"pending album: shuffle change failed: %@", e); dispatch_async(dispatch_get_main_queue(), start); }
 }
 
 // An artist that should start when the current track ends ("play this artist next").
@@ -935,6 +943,7 @@ static void runAlbumCommand(NSString *name, NSString *arg, int attempt) {
     NSArray *parts = [arg componentsSeparatedByString:@" "];
     NSString *albumArg = parts.firstObject ?: @"";
     BOOL noSkip = [arg rangeOfString:@"noskip"].location != NSNotFound;
+    BOOL shuffle = [parts containsObject:@"shuffle"];
     BOOL givenAlbum = [albumArg hasPrefix:@"spotify:album:"];
     NSString *trackURI = givenAlbum ? albumArg : currentTrackURI(playback).absoluteString;
     if (!trackURI.length) {
@@ -958,7 +967,7 @@ static void runAlbumCommand(NSString *name, NSString *arg, int attempt) {
             writeResult(@"Album cleared, nothing will start next");
             return;
         }
-        SPLog(@"album-queue: will start %@ after this track", albumURI);
+        SPLog(@"album-queue: will start %@ after this track (shuffle %@)", albumURI, shuffle ? @"on" : @"off");
         // If the song playing now is the album's first one, starting the album would play it twice.
         BOOL firstSong = NO;
         @try {
@@ -973,10 +982,12 @@ static void runAlbumCommand(NSString *name, NSString *arg, int attempt) {
         if (firstSong && noSkip) { SPLog(@"album-queue: the first song would repeat, but skipping was turned off"); firstSong = NO; }
         if (firstSong) SPLog(@"album-queue: %@ is the album's first song, so it will be skipped", trackURI);
         NSString *text = firstSong ? [albumURI stringByAppendingString:@"\nskipfirst"] : albumURI;
+        if (shuffle) text = [text stringByAppendingString:@"\nshuffle"];
         [text writeToFile:pendingAlbumPath() atomically:YES encoding:NSUTF8StringEncoding error:nil];
         [[NSFileManager defaultManager] removeItemAtPath:pendingArtistPath() error:nil];   // only one can go next
-        writeResult(firstSong ? @"Album plays after this track, from its second song (run it again to cancel)"
-                              : @"Album plays after this track (run it again to cancel)");
+        writeResult(shuffle ? @"Album plays after this track, shuffled (run it again to cancel)"
+                            : firstSong ? @"Album plays after this track, from its second song (run it again to cancel)"
+                                        : @"Album plays after this track (run it again to cancel)");
         });
     };
     if (givenAlbum) handle(trackURI); else resolveAlbumForTrack(trackURI, handle);
@@ -1967,6 +1978,7 @@ static void handleRelay(NSString *name, NSString *arg) {
         BOOL openPage = [arg rangeOfString:@"noopen"].location == NSNotFound;
         BOOL noSkip = [arg rangeOfString:@"noskip"].location != NSNotFound;
         BOOL noShuffle = [arg rangeOfString:@"noshuffle"].location != NSNotFound;
+        BOOL shuffle = !isArtist && [arg rangeOfString:@"shuffle"].location != NSNotFound;
         waitSpotifyResult(^(NSString *target) {
             if (![target hasPrefix:prefix]) { sbResult(isArtist ? @"No artist for the playing track" : @"No album for the playing track"); return; }
             // Spotify navigates to it itself; the system openURL path took ten seconds here.
@@ -1976,6 +1988,7 @@ static void handleRelay(NSString *name, NSString *arg) {
             NSString *command = [NSString stringWithFormat:@"zefyreborn:cmd %@-queue %@", kind, target];
             if (noSkip) command = [command stringByAppendingString:@" noskip"];
             if (noShuffle) command = [command stringByAppendingString:@" noshuffle"];
+            if (shuffle) command = [command stringByAppendingString:@" shuffle"];
             sendSpotifyCommandEx(command, NO);
             waitSpotifyResult(^(NSString *reply) { sbResult(reply ?: @"No answer from Spotify"); }, 0);
         }, 0);

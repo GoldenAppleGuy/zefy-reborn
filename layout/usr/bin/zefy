@@ -19,10 +19,10 @@ Usage: zefy [option] [value]
   --seek <sec>     move the position by seconds, negative goes back
   --queue <uri>    add a track to the queue (spotify:track:<id>)
   --album-open     open the album page of the playing track
-  --album-queue [--no-open] [--no-skip]
+  --album-queue [--no-open] [--no-skip] [--shuffle]
                    open the playing track's album page and play the album after this track; if the playing song is
                    the album's first one it starts at the second. --no-open skips opening the page, --no-skip plays
-                   the album from its first song anyway. Run it again to cancel.
+                   the album from its first song anyway, --shuffle plays it shuffled. Run it again to cancel.
   --artist-open    open the artist page of the playing track
   --artist-queue [--no-open] [--no-skip] [--no-shuffle]
                    open the playing track's artist page and play that artist, shuffled, after this track; if their
@@ -84,7 +84,8 @@ artist_open=0
 artist_queue=0
 page_open=1
 page_skip=1
-page_shuffle=1
+album_shuffle=0
+artist_shuffle=1
 case "$1" in
     --sleep)
         [ $# -eq 2 ] || fail "--sleep needs minutes, off or status"
@@ -128,12 +129,14 @@ case "$1" in
             case "$1" in
                 --no-open) page_open=0 ;;
                 --no-skip) page_skip=0 ;;
+                --shuffle) album_shuffle=1 ;;
                 *) fail "unknown flag for --album-queue: $1" ;;
             esac
             shift
         done
         [ $page_open -eq 0 ] && sbline="$sbline noopen"
         [ $page_skip -eq 0 ] && sbline="$sbline noskip"
+        [ $album_shuffle -eq 1 ] && sbline="$sbline shuffle"
         line="zefyreborn:cmd album-uri" ;;
     --artist-open) artist_open=1; line="zefyreborn:cmd artist-uri"; sbline="artist-open"; wait_result=1 ;;
     --artist-queue)
@@ -143,14 +146,14 @@ case "$1" in
             case "$1" in
                 --no-open) page_open=0 ;;
                 --no-skip) page_skip=0 ;;
-                --no-shuffle) page_shuffle=0 ;;
+                --no-shuffle) artist_shuffle=0 ;;
                 *) fail "unknown flag for --artist-queue: $1" ;;
             esac
             shift
         done
         [ $page_open -eq 0 ] && sbline="$sbline noopen"
         [ $page_skip -eq 0 ] && sbline="$sbline noskip"
-        [ $page_shuffle -eq 0 ] && sbline="$sbline noshuffle"
+        [ $artist_shuffle -eq 0 ] && sbline="$sbline noshuffle"
         line="zefyreborn:cmd artist-uri" ;;
     -*) fail "unknown option $1 (see -h)" ;;
     *) [ $# -eq 1 ] || fail "one link at a time"; line="$1"; foreground=1 ;;
@@ -271,7 +274,11 @@ if [ $wait_result -eq 1 ]; then
                     rm -f "$dir/zefyreborn.result"
                     queuecmd="zefyreborn:cmd $kind-queue $a"
                     [ $page_skip -eq 0 ] && queuecmd="$queuecmd noskip"
-                    [ $page_shuffle -eq 0 ] && queuecmd="$queuecmd noshuffle"
+                    if [ $kind = album ]; then
+                        [ $album_shuffle -eq 1 ] && queuecmd="$queuecmd shuffle"
+                    else
+                        [ $artist_shuffle -eq 0 ] && queuecmd="$queuecmd noshuffle"
+                    fi
                     printf '%s\n' "$queuecmd" > "$dir/zefyreborn.cmd.tmp" && mv "$dir/zefyreborn.cmd.tmp" "$dir/zefyreborn.cmd"
                     waitfor "$dir/zefyreborn.result" 8 && cat "$dir/zefyreborn.result" || echo "No answer from Spotify"
                 else echo "Opened $a"; fi ;;
