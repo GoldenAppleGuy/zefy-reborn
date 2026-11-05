@@ -2,6 +2,11 @@
 # JB is where the jailbreak lives: "" rootful, /var/jb rootless, a .jbroot folder on roothide (found from this file).
 JB=${0%/usr/bin/zefy}
 case $0 in */usr/bin/zefy) ;; *) JB=/var/jb ;; esac
+# Older bootstraps (checkra1n on iOS 14) only take a URL, so fall back to Spotify's scheme there.
+launch_spotify() {
+    $JB/usr/bin/uiopen --bundleid com.spotify.client >/dev/null 2>&1 && return
+    $JB/usr/bin/uiopen "spotify://" >/dev/null 2>&1
+}
 # zefy: control Spotify from the command line without the "Open in Spotify" prompt.
 # The request goes to the tweak through a file in Spotify's data folder.
 
@@ -220,7 +225,7 @@ if [ $use_relay -eq 1 ]; then
         ask "relay-wait $line" 10 && cat $sb.sbresult || echo "No answer from Spotify"
     else
         # A page only shows if Spotify is already frontmost when the link arrives.
-        [ $foreground -eq 1 ] && $JB/usr/bin/uiopen --bundleid com.spotify.client 2>/dev/null
+        [ $foreground -eq 1 ] && launch_spotify
         ask "relay $line" 3 || { echo "SpringBoard did not answer (is the tweak loaded there?)"; exit 1; }
     fi
     exit 0
@@ -254,7 +259,7 @@ printf '%s\n' "$line" > "$dir/zefyreborn.cmd.tmp" && mv "$dir/zefyreborn.cmd.tmp
 
 # Open Spotify for links; for controls only start it when it is not running.
 if [ $foreground -eq 1 ] || ! ps -ax -o comm | grep -q "Spotify.app/Spotify"; then
-    $JB/usr/bin/uiopen --bundleid com.spotify.client
+    launch_spotify
 fi
 if [ $wait_result -eq 1 ]; then
     if waitfor "$dir/zefyreborn.result" 8; then
@@ -267,8 +272,10 @@ if [ $wait_result -eq 1 ]; then
         case "$a" in
             spotify:album:*|spotify:artist:*)
                 if [ $page_open -eq 1 ]; then
-                    rm -f $sb.sbresult
-                    printf '%s\n' "openurl $a" > $sb.sbcmd.tmp 2>/dev/null && mv $sb.sbcmd.tmp $sb.sbcmd 2>/dev/null
+                    # Spotify opens its own page; the SpringBoard openurl path is dead where the relay is.
+                    printf '%s\n' "zefyreborn:cmd $kind-open $a" > "$dir/zefyreborn.cmd.tmp" && mv "$dir/zefyreborn.cmd.tmp" "$dir/zefyreborn.cmd"
+                    # Let Spotify pick that up before the queue command overwrites the file.
+                    { [ $album_queue -eq 1 ] || [ $artist_queue -eq 1 ]; } && sleep 1
                 fi
                 if [ $album_queue -eq 1 ] || [ $artist_queue -eq 1 ]; then
                     rm -f "$dir/zefyreborn.result"
