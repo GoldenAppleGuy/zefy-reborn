@@ -1171,7 +1171,7 @@ static NSString *playableURI(NSString *uri) {
     return uri;
 }
 
-static void playByName(NSString *kind, NSString *query) {
+static void playByName(NSString *kind, NSString *query, BOOL open) {
     NSDictionary *sources = @{@"playlist": @[@"spotify:playlists"], @"album": @[@"spotify:collection:albums"], @"artist": @[@"spotify:collection:artists"],
                               @"any": @[@"spotify:playlists", @"spotify:collection:albums", @"spotify:collection:artists", @"spotify:recently-played"]};
     NSArray *parents = sources[kind];
@@ -1189,8 +1189,11 @@ static void playByName(NSString *kind, NSString *query) {
         NSString *subtitle = [[best valueForKey:@"subtitle"] description];
         SPLog(@"by name %@: %@ (%d)", query, [best valueForKey:@"title"], bestScore);
         writeResult([NSString stringWithFormat:@"Playing %@%@", [best valueForKey:@"title"], subtitle.length && ![subtitle isEqualToString:@"(null)"] ? [@" - " stringByAppendingString:subtitle] : @""]);
-        if ([uri containsString:@":collection:artist:"]) startPlayback(playableURI(uri), NO);
-        else playItem(c, best, playableURI(uri), NO);
+        NSString *playURI = playableURI(uri);
+        // --open shows the playlist, album or artist page too, like tapping it and pressing play.
+        if (open) navigateToPage(playURI);
+        if ([uri containsString:@":collection:artist:"]) startPlayback(playURI, NO);
+        else playItem(c, best, playURI, NO);
     });
 }
 
@@ -1244,7 +1247,11 @@ static void runCommandLineUnsafe(NSString *line) {
     if ([name isEqualToString:@"random"]) { playRandom(arg); return; }
     if ([name isEqualToString:@"by-name"]) {
         NSRange sp = [arg rangeOfString:@" "];
-        playByName(sp.location == NSNotFound ? arg : [arg substringToIndex:sp.location], sp.location == NSNotFound ? @"" : [arg substringFromIndex:sp.location + 1]);
+        NSString *kind = sp.location == NSNotFound ? arg : [arg substringToIndex:sp.location];
+        NSString *rest = sp.location == NSNotFound ? @"" : [arg substringFromIndex:sp.location + 1];
+        BOOL open = NO;
+        if ([rest hasPrefix:@"open "]) { open = YES; rest = [rest substringFromIndex:5]; }
+        playByName(kind, rest, open);
         return;
     }
     if ([name isEqualToString:@"probe"]) { runProbe(arg); return; }

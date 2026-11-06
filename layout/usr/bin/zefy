@@ -44,10 +44,11 @@ Usage: zefy [option] [value]
                    save the playlist the three options above use
   --radio [uri]    play radio from a track, album, artist or playlist; none = the playing track
   --likedsongs     play Liked Songs
-  --playlist <name>  play a playlist from your library by name
-  --album <name>   play a saved album by name
-  --artist <name>  play a followed artist by name
-  --find <name>    play the best match among playlists, albums, artists and recents
+  --playlist <name> [--open]  play a playlist from your library by name
+  --album <name> [--open]     play a saved album by name
+  --artist <name> [--open]    play a followed artist by name
+  --find <name> [--open]      play the best match among playlists, albums, artists and recents
+                   --open also brings the playlist, album or artist page to the screen
   --status         show what is playing
   --sleep <min>    pause after that many minutes; --sleep off cancels, --sleep status shows the time left
   --randomrecent   play a random item from your recently played
@@ -103,7 +104,13 @@ case "$1" in
     --playlist|--album|--artist|--find)
         [ $# -ge 2 ] || fail "$1 needs a name"
         kind=${1#--}; [ "$kind" = find ] && kind=any
-        shift; line="zefyreborn:cmd by-name $kind $*"; wait_result=1 ;;
+        shift; open=; name=
+        for a in "$@"; do
+            if [ "$a" = --open ]; then open="open "; else name="$name $a"; fi
+        done
+        name=${name# }
+        [ -n "$name" ] || fail "$1 needs a name"
+        line="zefyreborn:cmd by-name $kind $open$name"; wait_result=1 ;;
     ""|-h|--help) usage; exit 0 ;;
     -n) [ $# -eq 2 ] || fail "-n needs a link"; line="zefyreborn:cmd navigate $2"; foreground=1 ;;
     -s) v=${2:-1}; mode "$v"; line="zefyreborn:cmd shuffle $v" ;;

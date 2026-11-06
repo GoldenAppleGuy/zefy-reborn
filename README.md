@@ -67,6 +67,8 @@ zefy --playlist <name>  play a playlist from your library by name (partial names
 zefy --album <name>     play a saved album by name
 zefy --artist <name>    play a followed artist by name
 zefy --find <name>      best match among playlists, albums, artists and recents
+zefy --find <name> --open
+                        same, and bring the matched page to the screen (also works with the three above)
 zefy --status           what is playing: title - artist (album) [playing|paused] (liked)
 zefy --sleep <minutes>  pause after that long; --sleep off cancels, --sleep status shows the time left
 zefy --randomrecent     play a random item from your recently played

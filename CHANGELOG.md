@@ -2,6 +2,9 @@
 
 Private build. Versions are listed newest first.
 
+## 1.0.4
+- `zefy --playlist`, `--album`, `--artist` and `--find` accept `--open`, which brings the matched playlist, album or artist page to the screen while it plays. Without it they only start playback, as before.
+
 ## 1.0.3
 - `zefy --album-open` opens the album page of the currently playing track without playing anything. The album comes from the track's own metadata, so it works with Spotify 8.x too, and the page is opened inside Spotify so it comes to the screen.
 - `zefy --album-queue` opens the playing track's album page and plays that album after the current track. Spotify cannot queue an album (only single tracks), so the album is remembered and started when the track changes, with shuffle off. If the song playing when you asked was the album's first one, it starts at the second so you do not hear it twice. `--no-open` leaves the page closed, `--no-skip` keeps the first song, `--shuffle` plays the album shuffled. Running it again cancels. It works on every Spotify version, including 8.x, because it needs no album track list.
