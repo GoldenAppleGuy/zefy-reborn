@@ -196,7 +196,16 @@ static id findInstance(NSString *className) {
     return st.found;
 }
 
-static id findController(void) { return findInstance(kControllerClass); }
+static id findController(void) {
+    // The controller is a singleton, and scanning the heap for it costs seconds once Spotify has been running a
+    // while, so the first hit is kept. It lives as long as the app, so holding it is safe.
+    static id cached;
+    Class k = NSClassFromString(kControllerClass);
+    if (cached && object_getClass(cached) == k) return cached;
+    id found = findInstance(kControllerClass);
+    if (found) cached = found;
+    return found;
+}
 
 // ---- links ------------------------------------------------------------------------------------------------
 
@@ -314,6 +323,7 @@ static void startPlayback(NSString *uri, BOOL shuffle) {
   @try {
     id c = findController();
     if (!c) { SPLog(@"play %@: no playback controller", uri); return; }
+    if (!uri.length || ![NSURL URLWithString:uri]) { SPLog(@"play: bad uri %@", uri); return; }
     BOOL container = [uri hasPrefix:@"spotify:playlist:"] || [uri hasPrefix:@"spotify:album:"] || [uri hasPrefix:@"spotify:artist:"];
     SPLog(@"play %@ shuffle=%d", uri, shuffle);
     playItem(c, container ? contentItemForURI(uri) : nil, uri, shuffle);
@@ -590,6 +600,477 @@ static void runCollectionCommand(NSString *name, NSString *arg, int attempt) {
     }
 }
 
+// ---- album of the playing track ------------------------------------------------------------------
+// SPTPlayerTrack has no albumURI property (only URI/artistURI/trackTitle/metadata), so the album is
+// read from track.metadata[@"album_uri"] first, then from the resolver's contextURI/viewURI.
+
+static NSString *playableURI(NSString *uri);
+static void writeResult(NSString *text);
+
+static NSString *extractAlbumURI(NSString *s) {
+    if (!s.length || [s isEqualToString:@"(null)"]) return nil;
+    // Matches both spotify:album:<id> and the library form spotify:user:<name>:collection:album:<id>.
+    NSRegularExpression *re = [NSRegularExpression regularExpressionWithPattern:@"spotify:[^\\s]*?album:[A-Za-z0-9]+" options:0 error:nil];
+    NSTextCheckingResult *m = [re firstMatchInString:s options:0 range:NSMakeRange(0, s.length)];
+    return m ? playableURI([s substringWithRange:m.range]) : nil;
+}
+
+static id makeContentOptions(id cc) {
+    NSArray *candidates = @[[NSValue valueWithPointer:NSSelectorFromString(@"makeContentRequestOptions:offlineOnly:enableEntityPages:debugLogTags:spacesLocaleOverride:libraryCollectionRootFormat:browseGenreFormat:overrideRecentlyPlayedPlaceholder:synchronize:libraryContentPreferences:")],   // 9.1
+                            [NSValue valueWithPointer:NSSelectorFromString(@"makeContentRequestOptions:offlineOnly:enableEntityPages:debugLogTags:spacesLocaleOverride:libraryCollectionRootFormat:browseGenreFormat:overrideRecentlyPlayedPlaceholder:synchronize:tags:")],                        // 9.0
+                            [NSValue valueWithPointer:NSSelectorFromString(@"makeContentRequestOptions:offlineOnly:enableEntityPages:debugLogTags:spacesLocaleOverride:libraryCollectionRootFormat:browseGenreFormat:overrideRecentlyPlayedPlaceholder:synchronize:")],                              // 9.0 shorter
+                            [NSValue valueWithPointer:NSSelectorFromString(@"makeContentRequestOptions:offlineOnly:enableEntityPages:debugLogTags:spacesLocaleOverride:likedSongsInPlayLists:")]];   // 8.6
+    SEL makeSel = NULL;
+    for (NSValue *v in candidates) if ([cc respondsToSelector:v.pointerValue]) { makeSel = v.pointerValue; break; }
+    if (!makeSel) {   // 8.x has no :synchronize: tail, so find the real name by its common prefix
+        unsigned mc = 0;
+        Method *ms = class_copyMethodList(object_getClass(cc), &mc);
+        for (unsigned i = 0; i < mc; i++) {
+            NSString *n = NSStringFromSelector(method_getName(ms[i]));
+            if ([n hasPrefix:@"makeContentRequestOptions:offlineOnly:enableEntityPages:"] && (!makeSel || n.length > NSStringFromSelector(makeSel).length)) makeSel = method_getName(ms[i]);
+        }
+        free(ms);
+    }
+    if (!makeSel) return nil;
+    @try {
+        if ([NSStringFromSelector(makeSel) hasSuffix:@"likedSongsInPlayLists:"])
+            return ((id (*)(id, SEL, unsigned long long, BOOL, BOOL, id, id, BOOL))objc_msgSend)(cc, makeSel, 100, NO, NO, nil, nil, NO);
+        return ((id (*)(id, SEL, unsigned long long, BOOL, BOOL, id, id, long long, long long, BOOL, BOOL, id))objc_msgSend)(cc, makeSel, 100, NO, NO, nil, nil, 0, 0, NO, NO, nil);
+    } @catch (NSException *e) { SPLog(@"resolve: option builder failed: %@", e); return nil; }
+}
+
+// The resolver answers with a response object (9.x) or the items themselves (8.6).
+static void resolveContentWith(NSString *uri, void (^completion)(NSArray *items, id error)) {
+    id cc = findInstance(kContentClass);
+    SEL resolve = @selector(resolveContentWithURI:options:withCompletionHandler:);
+    if (!uri.length || ![NSURL URLWithString:uri]) { SPLog(@"resolve: bad uri %@", uri); completion(@[], nil); return; }
+    if (!cc || ![cc respondsToSelector:resolve]) { SPLog(@"resolve %@: no content resolver", uri); completion(@[], nil); return; }
+    id opts = makeContentOptions(cc);
+    if (!opts) { SPLog(@"resolve %@: no option builder", uri); completion(@[], nil); return; }
+    ((void (*)(id, SEL, id, id, id))objc_msgSend)(cc, resolve, [NSURL URLWithString:uri], opts, ^(id response, id error) {
+        completion(contentItems(response), error);
+    });
+}
+
+static void resolveAlbumForTrack(NSString *trackURI, void (^done)(NSString *albumURI)) {
+    @try {
+        id playback = findController();
+        id ps = playback ? ((id (*)(id, SEL))objc_msgSend)(playback, @selector(playerState)) : nil;
+        id track = nil;
+        @try { track = [ps valueForKey:@"track"]; } @catch (NSException *e) {}
+        id meta = nil;
+        @try { meta = [track valueForKey:@"metadata"]; } @catch (NSException *e) {}
+        if ([meta isKindOfClass:NSDictionary.class]) {
+            for (NSString *k in @[@"album_uri", @"albumUri", @"albumURI", @"context_uri"]) {
+                NSString *a = extractAlbumURI([[meta objectForKey:k] description]);
+                if (a) { SPLog(@"album: from metadata %@=%@", k, a); done(a); return; }
+            }
+            SPLog(@"album: metadata has no album uri (keys %lu)", (unsigned long)[(NSDictionary *)meta count]);
+        }
+        for (NSString *k in @[@"albumURI", @"albumUri", @"albumURL", @"contextURI", @"album"]) {
+            NSString *v = nil;
+            @try { v = [[track valueForKey:k] description]; } @catch (NSException *e) {}
+            NSString *a = extractAlbumURI(v);
+            if (a) { SPLog(@"album: from track.%@=%@", k, a); done(a); return; }
+        }
+        NSString *ctx = nil;
+        @try { ctx = [[ps valueForKey:@"contextURI"] description]; } @catch (NSException *e) {}
+        NSString *ca = extractAlbumURI(ctx);
+        if (ca) { SPLog(@"album: from playerState.contextURI=%@", ca); done(ca); return; }
+    } @catch (NSException *e) { SPLog(@"album: metadata lookup failed: %@", e); }
+    resolveContentWith(trackURI, ^(NSArray *items, id error) {
+        for (id item in items) {
+            for (NSString *k in @[@"contextURI", @"viewURI", @"URI"]) {
+                NSString *a = nil;
+                @try { a = extractAlbumURI([[item valueForKey:k] description]); } @catch (NSException *e) {}
+                if (a && [a hasPrefix:@"spotify:album:"]) { SPLog(@"album: resolved %@ via %@ for %@", a, k, trackURI); done(a); return; }
+            }
+        }
+        SPLog(@"album: resolver found no album for %@ (%lu items, error %@)", trackURI, (unsigned long)items.count, error);
+        done(nil);
+    });
+}
+
+// ---- artist of the playing track -----------------------------------------------------------------
+// The primary artist is in track.metadata[@"artist_uri"], which may hold a comma-separated list when a
+// track has several. The track's own artistURI property is the fallback, then the resolver's item.
+
+static NSString *extractArtistURI(NSString *s) {
+    if (!s.length || [s isEqualToString:@"(null)"]) return nil;
+    // Covers spotify:artist:<id> and the library form spotify:user:<name>:collection:artist:<id>.
+    NSRegularExpression *re = [NSRegularExpression regularExpressionWithPattern:@"spotify:[^\\s]*?artist:[A-Za-z0-9]+" options:0 error:nil];
+    NSTextCheckingResult *m = [re firstMatchInString:s options:0 range:NSMakeRange(0, s.length)];
+    return m ? playableURI([s substringWithRange:m.range]) : nil;
+}
+
+static void resolveArtistForTrack(NSString *trackURI, void (^done)(NSString *artistURI)) {
+    @try {
+        id playback = findController();
+        id ps = playback ? ((id (*)(id, SEL))objc_msgSend)(playback, @selector(playerState)) : nil;
+        id track = nil;
+        @try { track = [ps valueForKey:@"track"]; } @catch (NSException *e) {}
+        id meta = nil;
+        @try { meta = [track valueForKey:@"metadata"]; } @catch (NSException *e) {}
+        if ([meta isKindOfClass:NSDictionary.class]) {
+            for (NSString *k in @[@"artist_uri", @"artistUri", @"artistURI", @"artist_uris", @"artistURIs"]) {
+                NSString *a = extractArtistURI([[meta objectForKey:k] description]);
+                if (a) { SPLog(@"artist: from metadata %@=%@", k, a); done(a); return; }
+            }
+            SPLog(@"artist: metadata has no artist uri (keys %lu)", (unsigned long)[(NSDictionary *)meta count]);
+        }
+        NSString *v = nil;
+        @try { v = [[track valueForKey:@"artistURI"] description]; } @catch (NSException *e) {}
+        NSString *a = extractArtistURI(v);
+        if (a) { SPLog(@"artist: from track.artistURI=%@", a); done(a); return; }
+    } @catch (NSException *e) { SPLog(@"artist: metadata lookup failed: %@", e); }
+    resolveContentWith(trackURI, ^(NSArray *items, id error) {
+        for (id item in items) {
+            for (NSString *k in @[@"contextURI", @"viewURI", @"URI"]) {
+                NSString *a = nil;
+                @try { a = extractArtistURI([[item valueForKey:k] description]); } @catch (NSException *e) {}
+                if (a && [a hasPrefix:@"spotify:artist:"]) { SPLog(@"artist: resolved %@ via %@ for %@", a, k, trackURI); done(a); return; }
+            }
+        }
+        SPLog(@"artist: resolver found no artist for %@ (%lu items, error %@)", trackURI, (unsigned long)items.count, error);
+        done(nil);
+    });
+}
+
+// An album that should start when the current track ends ("play this album next").
+static NSString *pendingAlbumPath(void) {
+    return [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject stringByAppendingPathComponent:@"zefyreborn.pendingalbum"];
+}
+
+static NSString *pendingAlbum(void) {
+    NSString *text = [NSString stringWithContentsOfFile:pendingAlbumPath() encoding:NSUTF8StringEncoding error:nil];
+    NSString *first = [[text componentsSeparatedByString:@"\n"] firstObject];
+    first = [first stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    return [first hasPrefix:@"spotify:album:"] ? first : nil;
+}
+
+// The song that armed the album was its first one, so starting the album would replay it.
+static BOOL pendingSkipFirst(void) {
+    NSString *text = [NSString stringWithContentsOfFile:pendingAlbumPath() encoding:NSUTF8StringEncoding error:nil];
+    return [text containsString:@"skipfirst"];
+}
+
+// --shuffle plays the album shuffled, which the album's own play button does not do.
+static BOOL pendingAlbumShuffle(void) {
+    NSString *text = [NSString stringWithContentsOfFile:pendingAlbumPath() encoding:NSUTF8StringEncoding error:nil];
+    return [text containsString:@"shuffle"];
+}
+
+// The album can restart on the very song that armed it, so no track-change event arrives to hang the skip on.
+// This watches the player state instead and skips the first song once it is really playing.
+static void skipFirstWhenPlaying(NSString *album, int attempts) {
+    if (attempts <= 0) { SPLog(@"pending album: gave up skipping the first song"); return; }
+    id c = findController();
+    id ps = c ? ((id (*)(id, SEL))objc_msgSend)(c, @selector(playerState)) : nil;
+    NSString *playing = nil;
+    int number = 0;
+    @try {
+        id meta = [[ps valueForKey:@"track"] valueForKey:@"metadata"];
+        if ([meta isKindOfClass:NSDictionary.class]) {
+            playing = extractAlbumURI([[meta objectForKey:@"album_uri"] description]);
+            number = [[meta objectForKey:@"album_track_number"] intValue];
+        }
+    } @catch (NSException *e) {}
+    if ([playing isEqualToString:album] && number > 1) { SPLog(@"pending album: already past its first song"); return; }
+    if ([playing isEqualToString:album] && number == 1) {
+        SPLog(@"pending album: skipping its first song");
+        ((void (*)(id, SEL, id))objc_msgSend)(c, @selector(skipToNextTrackWithCompletionHandler:), ^(void *x) {
+            SPLog(@"pending album: skipped the first song (%p)", x);
+        });
+        return;
+    }
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        skipFirstWhenPlaying(album, attempts - 1);
+    });
+}
+
+// Called from the player state hook when the track changes. The album of the new track is compared with the
+// pending one so that an album already playing is not restarted at its first song.
+static void playPendingAlbum(id state) {
+    NSString *pending = pendingAlbum();
+    if (!pending) return;
+    BOOL skipFirst = pendingSkipFirst();   // read before the file is removed below
+    BOOL shuffle = pendingAlbumShuffle();
+    NSString *nowPlayingAlbum = nil;
+    @try {
+        id track = [state valueForKey:@"track"], meta = [track valueForKey:@"metadata"];
+        if ([meta isKindOfClass:NSDictionary.class]) nowPlayingAlbum = extractAlbumURI([[meta objectForKey:@"album_uri"] description]);
+    } @catch (NSException *e) {}
+    [[NSFileManager defaultManager] removeItemAtPath:pendingAlbumPath() error:nil];
+    if ([pending isEqualToString:nowPlayingAlbum ?: @""]) { SPLog(@"pending album: %@ is already playing, nothing to do", pending); return; }
+    SPLog(@"pending album: starting %@ after the track change (shuffle %@)", pending, shuffle ? @"on" : @"off");
+    id c = findController();
+    if (!c) { SPLog(@"pending album: no playback controller"); return; }
+    void (^start)(void) = ^{
+        startPlayback(pending, shuffle);
+        if (skipFirst) {
+            // Wait for the album to actually be playing before stepping past its first song.
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                skipFirstWhenPlaying(pending, 6);
+            });
+        }
+    };
+    // A shuffled album starts on a random song; otherwise turn shuffle off so it starts at the top.
+    @try {
+        SEL shuffleSel = shuffle ? @selector(enableShuffleWithCompletionHandler:) : @selector(disableShuffleWithCompletionHandler:);
+        ((void (*)(id, SEL, id))objc_msgSend)(c, shuffleSel, ^(void *x) {
+            SPLog(@"pending album: shuffle %@ (%p)", shuffle ? @"on" : @"off", x);
+            dispatch_async(dispatch_get_main_queue(), start);
+        });
+    } @catch (NSException *e) { SPLog(@"pending album: shuffle change failed: %@", e); dispatch_async(dispatch_get_main_queue(), start); }
+}
+
+// An artist that should start when the current track ends ("play this artist next").
+static NSString *pendingArtistPath(void) {
+    return [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject stringByAppendingPathComponent:@"zefyreborn.pendingartist"];
+}
+
+static NSArray *pendingArtistLines(void) {
+    NSString *text = [NSString stringWithContentsOfFile:pendingArtistPath() encoding:NSUTF8StringEncoding error:nil];
+    NSMutableArray *lines = [NSMutableArray array];
+    for (NSString *line in [text componentsSeparatedByString:@"\n"]) {
+        NSString *trimmed = [line stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+        if (trimmed.length) [lines addObject:trimmed];
+    }
+    return lines;
+}
+
+static NSString *pendingArtist(void) {
+    NSString *first = pendingArtistLines().firstObject;
+    return [first hasPrefix:@"spotify:artist:"] ? first : nil;
+}
+
+// The track that armed the artist, kept so its playback is not started on the same song that is already playing.
+static NSString *pendingArtistTrack(void) {
+    NSArray *lines = pendingArtistLines();
+    return lines.count > 1 && [lines[1] hasPrefix:@"spotify:track:"] ? lines[1] : nil;
+}
+
+// --no-shuffle keeps the artist in order instead of shuffling it, which is what its play button does.
+static BOOL pendingArtistNoShuffle(void) {
+    NSString *text = [NSString stringWithContentsOfFile:pendingArtistPath() encoding:NSUTF8StringEncoding error:nil];
+    return [text containsString:@"noshuffle"];
+}
+
+// An artist's play button can start on the very song that armed it. Once the artist context is playing, the
+// current track is compared with the arming one and skipped if it is the same.
+static void skipIfArtistRepeats(NSString *artistURI, NSString *trackURI, int attempts) {
+    if (attempts <= 0) { SPLog(@"pending artist: never saw it start, no skip"); return; }
+    id c = findController();
+    id ps = c ? ((id (*)(id, SEL))objc_msgSend)(c, @selector(playerState)) : nil;
+    NSString *context = nil;
+    @try { context = [[ps valueForKey:@"contextURI"] description]; } @catch (NSException *e) {}
+    if ([extractArtistURI(context) isEqualToString:artistURI]) {
+        NSString *playing = currentTrackURI(c).absoluteString;
+        if ([playing isEqualToString:trackURI]) {
+            SPLog(@"pending artist: started on the song that armed it, skipping");
+            ((void (*)(id, SEL, id))objc_msgSend)(c, @selector(skipToNextTrackWithCompletionHandler:), ^(void *x) {
+                SPLog(@"pending artist: skipped it (%p)", x);
+            });
+        } else {
+            SPLog(@"pending artist: started on another song (%@), nothing to skip", playing);
+        }
+        return;
+    }
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        skipIfArtistRepeats(artistURI, trackURI, attempts - 1);
+    });
+}
+
+// Called from the player state hook when the track changes.
+static void playPendingArtist(id state) {
+    (void)state;
+    NSString *pending = pendingArtist();
+    if (!pending) return;
+    NSString *armingTrack = pendingArtistTrack();
+    BOOL noShuffle = pendingArtistNoShuffle();
+    [[NSFileManager defaultManager] removeItemAtPath:pendingArtistPath() error:nil];
+    SPLog(@"pending artist: starting %@ after the track change (shuffle %@)", pending, noShuffle ? @"off" : @"on");
+    id c = findController();
+    if (!c) { SPLog(@"pending artist: no playback controller"); return; }
+    void (^start)(void) = ^{
+        startPlayback(pending, !noShuffle);
+        if (armingTrack.length) {
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                skipIfArtistRepeats(pending, armingTrack, 8);
+            });
+        }
+    };
+    // Spotify's play button on an artist page shuffles, so that is the default here; --no-shuffle keeps the order.
+    @try {
+        SEL shuffleSel = noShuffle ? @selector(disableShuffleWithCompletionHandler:) : @selector(enableShuffleWithCompletionHandler:);
+        ((void (*)(id, SEL, id))objc_msgSend)(c, shuffleSel, ^(void *x) {
+            SPLog(@"pending artist: shuffle %@ (%p)", noShuffle ? @"off" : @"on", x);
+            dispatch_async(dispatch_get_main_queue(), start);
+        });
+    } @catch (NSException *e) { SPLog(@"pending artist: shuffle change failed: %@", e); dispatch_async(dispatch_get_main_queue(), start); }
+}
+
+// A radio station that should start when the current track ends ("queue radio").
+static NSString *pendingRadioPath(void) {
+    return [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject stringByAppendingPathComponent:@"zefyreborn.pendingradio"];
+}
+
+static NSString *pendingRadio(void) {
+    NSString *text = [NSString stringWithContentsOfFile:pendingRadioPath() encoding:NSUTF8StringEncoding error:nil];
+    NSString *first = [[text componentsSeparatedByString:@"\n"] firstObject];
+    first = [first stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    return [first hasPrefix:@"spotify:station:"] ? first : nil;
+}
+
+static void navigateToPage(NSString *uri);
+
+// Called from the player state hook when the track changes.
+static void playPendingRadio(id state) {
+    (void)state;
+    NSString *pending = pendingRadio();
+    if (!pending) return;
+    [[NSFileManager defaultManager] removeItemAtPath:pendingRadioPath() error:nil];
+    SPLog(@"pending radio: starting %@ after the track change", pending);
+    startPlayback(pending, NO);
+    // The page may have moved while the track played, so bring the station page up again when it starts.
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        SPLog(@"pending radio: opening %@", pending);
+        navigateToPage(pending);
+    });
+}
+
+// Opens a page inside Spotify by handing its scene delegate the same kind of URL context a tapped link produces.
+// Going through SpringBoard's openURL instead blocks for about ten seconds on this iOS version.
+static void navigateToPage(NSString *uri) {
+    Class ctxClass = NSClassFromString(@"UIOpenURLContext"), optClass = NSClassFromString(@"UISceneOpenURLOptions");
+    for (UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
+        id del = scene.delegate;
+        if (![del respondsToSelector:@selector(scene:openURLContexts:)]) continue;
+        id ctx = ctxClass ? [[ctxClass alloc] init] : nil;
+        @try {
+            [ctx setValue:[NSURL URLWithString:uri] forKey:@"URL"];
+            if (optClass) [ctx setValue:[[optClass alloc] init] forKey:@"options"];
+        } @catch (NSException *e) { SPLog(@"page nav: no URL context (%@)", e); ctx = nil; }
+        if (ctx) {
+            SPLog(@"page nav: %@ via %@", uri, NSStringFromClass([del class]));
+            ((void (*)(id, SEL, id, id))objc_msgSend)(del, @selector(scene:openURLContexts:), scene, [NSSet setWithObject:ctx]);
+            return;
+        }
+        break;
+    }
+    SPLog(@"page nav: no scene delegate, falling back to the web activity");
+    navigateTo(uri);
+}
+
+static void runAlbumCommand(NSString *name, NSString *arg, int attempt) {
+    id playback = findController();
+    if (!playback) {
+        if (attempt < 40) dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ runAlbumCommand(name, arg, attempt + 1); });
+        else SPLog(@"%@: no playback controller", name);
+        return;
+    }
+    NSArray *parts = [arg componentsSeparatedByString:@" "];
+    NSString *albumArg = parts.firstObject ?: @"";
+    BOOL noSkip = [arg rangeOfString:@"noskip"].location != NSNotFound;
+    BOOL shuffle = [parts containsObject:@"shuffle"];
+    BOOL givenAlbum = [albumArg hasPrefix:@"spotify:album:"];
+    NSString *trackURI = givenAlbum ? albumArg : currentTrackURI(playback).absoluteString;
+    if (!trackURI.length) {
+        // Just after a background launch the player state can be empty for a few seconds.
+        if (attempt < 40) dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ runAlbumCommand(name, arg, attempt + 1); });
+        else SPLog(@"%@: nothing is playing", name);
+        return;
+    }
+    SPLog(@"%@ %@", name, trackURI);
+    void (^handle)(NSString *) = ^(NSString *albumURI) {
+        // The resolver answers on Spotify's thread; the work goes back on main like every other command.
+        dispatch_async(dispatch_get_main_queue(), ^{
+        if (!albumURI.length) { SPLog(@"%@: album not found for %@", name, trackURI); writeResult(@"none"); return; }
+        if ([name isEqualToString:@"album-uri"]) { writeResult(albumURI); return; }
+        if ([name isEqualToString:@"album-open"]) { navigateToPage(albumURI); return; }
+        // Spotify has no way to queue an album (only single tracks), so the album is remembered and started
+        // when the current track changes, which is what "play it next" means in practice.
+        if ([pendingAlbum() isEqualToString:albumURI]) {
+            [[NSFileManager defaultManager] removeItemAtPath:pendingAlbumPath() error:nil];
+            SPLog(@"album-queue: cleared %@", albumURI);
+            writeResult(@"Album cleared, nothing will start next");
+            return;
+        }
+        SPLog(@"album-queue: will start %@ after this track (shuffle %@)", albumURI, shuffle ? @"on" : @"off");
+        // If the song playing now is the album's first one, starting the album would play it twice.
+        BOOL firstSong = NO;
+        @try {
+            id playback = findController();
+            id ps = playback ? ((id (*)(id, SEL))objc_msgSend)(playback, @selector(playerState)) : nil;
+            id meta = [[ps valueForKey:@"track"] valueForKey:@"metadata"];
+            if ([meta isKindOfClass:NSDictionary.class]) {
+                firstSong = [[meta objectForKey:@"album_track_number"] intValue] == 1 &&
+                            [[meta objectForKey:@"album_disc_number"] intValue] <= 1;
+            }
+        } @catch (NSException *e) {}
+        if (firstSong && noSkip) { SPLog(@"album-queue: the first song would repeat, but skipping was turned off"); firstSong = NO; }
+        if (firstSong) SPLog(@"album-queue: %@ is the album's first song, so it will be skipped", trackURI);
+        NSString *text = firstSong ? [albumURI stringByAppendingString:@"\nskipfirst"] : albumURI;
+        if (shuffle) text = [text stringByAppendingString:@"\nshuffle"];
+        [text writeToFile:pendingAlbumPath() atomically:YES encoding:NSUTF8StringEncoding error:nil];
+        [[NSFileManager defaultManager] removeItemAtPath:pendingArtistPath() error:nil];   // only one can go next
+        [[NSFileManager defaultManager] removeItemAtPath:pendingRadioPath() error:nil];
+        writeResult(shuffle ? @"Album plays after this track, shuffled (run it again to cancel)"
+                            : firstSong ? @"Album plays after this track, from its second song (run it again to cancel)"
+                                        : @"Album plays after this track (run it again to cancel)");
+        });
+    };
+    if (givenAlbum) handle(trackURI); else resolveAlbumForTrack(trackURI, handle);
+}
+
+static void runArtistCommand(NSString *name, NSString *arg, int attempt) {
+    id playback = findController();
+    if (!playback) {
+        if (attempt < 40) dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ runArtistCommand(name, arg, attempt + 1); });
+        else SPLog(@"%@: no playback controller", name);
+        return;
+    }
+    NSArray *parts = [arg componentsSeparatedByString:@" "];
+    NSString *artistArg = parts.firstObject ?: @"";
+    BOOL noSkip = [arg rangeOfString:@"noskip"].location != NSNotFound;
+    BOOL noShuffle = [arg rangeOfString:@"noshuffle"].location != NSNotFound;
+    BOOL givenArtist = [artistArg hasPrefix:@"spotify:artist:"];
+    NSString *trackURI = givenArtist ? nil : currentTrackURI(playback).absoluteString;
+    if (!givenArtist && !trackURI.length) {
+        // Just after a background launch the player state can be empty for a few seconds.
+        if (attempt < 40) dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ runArtistCommand(name, arg, attempt + 1); });
+        else SPLog(@"%@: nothing is playing", name);
+        return;
+    }
+    SPLog(@"%@ %@", name, givenArtist ? artistArg : trackURI);
+    void (^handle)(NSString *) = ^(NSString *artistURI) {
+        // The resolver answers on Spotify's thread; the work goes back on main like every other command.
+        dispatch_async(dispatch_get_main_queue(), ^{
+        if (!artistURI.length) { SPLog(@"%@: artist not found for %@", name, trackURI); writeResult(@"none"); return; }
+        if ([name isEqualToString:@"artist-uri"]) { writeResult(artistURI); return; }
+        if ([name isEqualToString:@"artist-open"]) { navigateToPage(artistURI); return; }
+        // Spotify cannot queue an artist's tracks either, so the artist is remembered and started when the
+        // current track changes, which is what "play them next" means in practice.
+        if ([pendingArtist() isEqualToString:artistURI]) {
+            [[NSFileManager defaultManager] removeItemAtPath:pendingArtistPath() error:nil];
+            SPLog(@"artist-queue: cleared %@", artistURI);
+            writeResult(@"Artist cleared, nothing will start next");
+            return;
+        }
+        NSString *armingTrack = noSkip ? nil : currentTrackURI(findController()).absoluteString;
+        SPLog(@"artist-queue: will start %@ after this track (arming track %@, shuffle %@)", artistURI, armingTrack ?: @"ignored", noShuffle ? @"off" : @"on");
+        NSString *text = artistURI;
+        if (armingTrack.length) text = [text stringByAppendingFormat:@"\n%@", armingTrack];
+        if (noShuffle) text = [text stringByAppendingString:@"\nnoshuffle"];
+        [text writeToFile:pendingArtistPath() atomically:YES encoding:NSUTF8StringEncoding error:nil];
+        [[NSFileManager defaultManager] removeItemAtPath:pendingAlbumPath() error:nil];   // only one can go next
+        [[NSFileManager defaultManager] removeItemAtPath:pendingRadioPath() error:nil];
+        writeResult(@"Artist plays after this track (run it again to cancel)");
+        });
+    };
+    if (givenArtist) handle(artistArg); else resolveArtistForTrack(trackURI, handle);
+}
+
 // ---- browsing Spotify's own content tree (the one CarPlay uses) -------------------------------------------
 
 // Resolves the children of a node such as spotify:collection:playlists and hands back the response object.
@@ -721,7 +1202,7 @@ static NSString *playableURI(NSString *uri) {
     return uri;
 }
 
-static void playByName(NSString *kind, NSString *query) {
+static void playByName(NSString *kind, NSString *query, BOOL open) {
     NSDictionary *sources = @{@"playlist": @[@"spotify:playlists"], @"album": @[@"spotify:collection:albums"], @"artist": @[@"spotify:collection:artists"],
                               @"any": @[@"spotify:playlists", @"spotify:collection:albums", @"spotify:collection:artists", @"spotify:recently-played"]};
     NSArray *parents = sources[kind];
@@ -739,8 +1220,11 @@ static void playByName(NSString *kind, NSString *query) {
         NSString *subtitle = [[best valueForKey:@"subtitle"] description];
         SPLog(@"by name %@: %@ (%d)", query, [best valueForKey:@"title"], bestScore);
         writeResult([NSString stringWithFormat:@"Playing %@%@", [best valueForKey:@"title"], subtitle.length && ![subtitle isEqualToString:@"(null)"] ? [@" - " stringByAppendingString:subtitle] : @""]);
-        if ([uri containsString:@":collection:artist:"]) startPlayback(playableURI(uri), NO);
-        else playItem(c, best, playableURI(uri), NO);
+        NSString *playURI = playableURI(uri);
+        // --open shows the playlist, album or artist page too, like tapping it and pressing play.
+        if (open) navigateToPage(playURI);
+        if ([uri containsString:@":collection:artist:"]) startPlayback(playURI, NO);
+        else playItem(c, best, playURI, NO);
     });
 }
 
@@ -794,7 +1278,11 @@ static void runCommandLineUnsafe(NSString *line) {
     if ([name isEqualToString:@"random"]) { playRandom(arg); return; }
     if ([name isEqualToString:@"by-name"]) {
         NSRange sp = [arg rangeOfString:@" "];
-        playByName(sp.location == NSNotFound ? arg : [arg substringToIndex:sp.location], sp.location == NSNotFound ? @"" : [arg substringFromIndex:sp.location + 1]);
+        NSString *kind = sp.location == NSNotFound ? arg : [arg substringToIndex:sp.location];
+        NSString *rest = sp.location == NSNotFound ? @"" : [arg substringFromIndex:sp.location + 1];
+        BOOL open = NO;
+        if ([rest hasPrefix:@"open "]) { open = YES; rest = [rest substringFromIndex:5]; }
+        playByName(kind, rest, open);
         return;
     }
     if ([name isEqualToString:@"probe"]) { runProbe(arg); return; }
@@ -822,13 +1310,41 @@ static void runCommandLineUnsafe(NSString *line) {
         return;
     }
     if ([name isEqualToString:@"radio"]) {
-        // Radio from the given track, album, artist or playlist URI, else from the playing track.
-        NSString *uri = arg.length ? arg : currentTrackURI(findController()).absoluteString;
-        if (![uri hasPrefix:@"spotify:"]) { SPLog(@"radio: no source"); return; }
-        startPlayback([@"spotify:station:" stringByAppendingString:[uri substringFromIndex:8]], NO);
+        // Radio is queued after the playing track unless "now" is given, and its station page opens unless
+        // "noopen" is given. The source is a track, album, artist or playlist URI, else the playing track.
+        NSArray *parts = arg.length ? [arg componentsSeparatedByString:@" "] : @[];
+        BOOL now = [parts containsObject:@"now"];
+        BOOL noOpen = [parts containsObject:@"noopen"];
+        NSString *source = nil;
+        for (NSString *p in parts) if ([p hasPrefix:@"spotify:"]) { source = p; break; }
+        NSString *uri = source.length ? source : currentTrackURI(findController()).absoluteString;
+        if (![uri hasPrefix:@"spotify:"]) { SPLog(@"radio: no source"); writeResult(@"Radio needs a track to start from"); return; }
+        NSString *station = source.length && [source hasPrefix:@"spotify:station:"]
+            ? source : [@"spotify:station:" stringByAppendingString:[uri substringFromIndex:8]];
+        // Asking for the queued station again cancels it, like the album and artist queues.
+        if (!now && [station isEqualToString:pendingRadio() ?: @""]) {
+            [[NSFileManager defaultManager] removeItemAtPath:pendingRadioPath() error:nil];
+            SPLog(@"radio: cleared %@", station);
+            writeResult(@"Radio cleared, nothing will start next");
+            return;
+        }
+        if (!noOpen) navigateToPage(station);
+        if (now || !currentTrackURI(findController()).absoluteString.length) {
+            SPLog(@"radio: playing %@", station);
+            startPlayback(station, NO);
+            writeResult(@"Radio playing");
+            return;
+        }
+        [station writeToFile:pendingRadioPath() atomically:YES encoding:NSUTF8StringEncoding error:nil];
+        [[NSFileManager defaultManager] removeItemAtPath:pendingAlbumPath() error:nil];
+        [[NSFileManager defaultManager] removeItemAtPath:pendingArtistPath() error:nil];
+        SPLog(@"radio: will start %@ after this track", station);
+        writeResult(@"Radio plays after this track (run it again to cancel)");
         return;
     }
     if ([name isEqualToString:@"like"] || [name isEqualToString:@"liked"] || [name isEqualToString:@"playlist-has"] || [name isEqualToString:@"playlist-add"] || [name isEqualToString:@"playlist-remove"]) { runCollectionCommand(name, arg, 0); return; }
+    if ([name isEqualToString:@"album-open"] || [name isEqualToString:@"album-queue"] || [name isEqualToString:@"album-uri"]) { runAlbumCommand(name, arg, 0); return; }
+    if ([name isEqualToString:@"artist-open"] || [name isEqualToString:@"artist-queue"] || [name isEqualToString:@"artist-uri"]) { runArtistCommand(name, arg, 0); return; }
     if ([name isEqualToString:@"instances"]) { for (NSString *cn in [arg componentsSeparatedByString:@","]) findInstance(cn); return; }
     runControllerCommand(name, arg, 0);
 }
@@ -845,7 +1361,10 @@ static void checkCommandFile(void) {
     if (![link hasPrefix:@"zefyreborn:"] && !prefBool(@"enabled", YES)) return;
     if ([link isEqualToString:kResumeCommand]) { if (prefBool(@"enabled", YES)) { gResumeTries = 0; resumePlayback(0); } return; }
     if ([link hasPrefix:kCommandPrefix]) { if (prefBool(@"enabled", YES)) runCommandLine(link); return; }
-    handleLink([NSURL URLWithString:link]);
+    NSURL *url = [NSURL URLWithString:link];
+    BOOL shuffle;
+    if (parseLink(url, &shuffle)) handleLink(url);
+    else navigateTo(link);   // a plain link opens the page without playing
 }
 
 static dispatch_source_t gWatch;   // must stay referenced or the watch is cancelled
@@ -991,6 +1510,9 @@ static void onPlayerStateUnsafe(id state) {
     if (stateChanged) postNote("com.goldenappleguy.zefyreborn.playstate", playing);
     SPLog(@"now playing: %@ playing=%d", uri, playing);
     if (trackChanged) writeRecents();
+    if (trackChanged) playPendingAlbum(state);
+    if (trackChanged) playPendingArtist(state);
+    if (trackChanged) playPendingRadio(state);
     if (trackChanged && uri.length) {
         id coll = findInstance(kCollectionClass);
         if (coll) {
@@ -1093,15 +1615,40 @@ static void sendSpotifyCommandEx(NSString *line, BOOL launch);
 static void sendSpotifyCommand(NSString *line) { sendSpotifyCommandEx(line, YES); }
 
 // Waking a Spotify that is suspended in the background often loses the audio a moment after it starts, while a fresh
-// launch is reliable. So when a request starts playback, nothing is playing, and Spotify is still running (suspended),
-// it is closed first and launched clean.
+// launch is reliable. So when a request starts playback, nothing is playing, and Spotify is still running
+// (suspended), it is closed first and launched clean. When Spotify is frontmost, killing it would just make the
+// app vanish on the user, so the request is handed over instead.
 @interface SBApplicationController : NSObject
 + (instancetype)sharedInstance;
 - (id)applicationWithBundleIdentifier:(NSString *)bundleIdentifier;
 @end
 
+// The scene state lives in SpringBoard itself, so no IPC call (a synchronous one froze SpringBoard on its main
+// queue). A nil scene, an unknown one or an error counts as backgrounded.
+static BOOL spotifySceneForeground(void) {
+    Class controllerClass = NSClassFromString(@"SBApplicationController");
+    SEL shared = NSSelectorFromString(@"sharedInstance");
+    SEL application = NSSelectorFromString(@"applicationWithBundleIdentifier:");
+    SEL mainScene = NSSelectorFromString(@"mainScene");
+    SEL settings = NSSelectorFromString(@"settings");
+    SEL isBackgrounded = NSSelectorFromString(@"isBackgrounded");
+    if (!controllerClass || ![controllerClass respondsToSelector:shared]) return NO;
+    id controller = ((id (*)(id, SEL))objc_msgSend)(controllerClass, shared);
+    if (!controller || ![controller respondsToSelector:application]) return NO;
+    id app = ((id (*)(id, SEL, id))objc_msgSend)(controller, application, kSpotifyID);
+    if (!app || ![app respondsToSelector:mainScene]) return NO;
+    id scene = ((id (*)(id, SEL))objc_msgSend)(app, mainScene);
+    if (!scene || ![scene respondsToSelector:settings]) return NO;
+    id state = ((id (*)(id, SEL))objc_msgSend)(scene, settings);
+    if (!state || ![state respondsToSelector:isBackgrounded]) return NO;
+    return !((BOOL (*)(id, SEL))objc_msgSend)(state, isBackgrounded);
+}
+
 static BOOL commandStartsPlayback(NSString *line) {
-    if (![line hasPrefix:@"zefyreborn:"]) return YES;   // a link
+    if (![line hasPrefix:@"zefyreborn:"]) {   // a link only restarts Spotify when it carries a play flag
+        BOOL shuffle;
+        return parseLink([NSURL URLWithString:line], &shuffle) != nil;
+    }
     if ([line isEqualToString:kResumeCommand]) return YES;
     for (NSString *name in @[@"resume", @"by-name", @"random", @"radio", @"likedsongs"])
         if ([line hasPrefix:[kCommandPrefix stringByAppendingString:name]]) return YES;
@@ -1131,10 +1678,16 @@ static void sendSpotifyCommandEx(NSString *line, BOOL launch) {
         pid_t pid = spotifyPID();
         id mc = NSClassFromString(@"SBMediaController") ? [NSClassFromString(@"SBMediaController") sharedInstance] : nil;
         if (pid > 1 && ![mc isPlaying]) {
-            SPLog(@"Spotify is running but not playing (pid %d): closing it so it launches clean", pid);
-            kill(pid, SIGKILL);
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ sendSpotifyCommandNow(line, launch); });
-            return;
+            if (!prefBool(@"cleanRelaunch", NO)) {
+                SPLog(@"Spotify is running but not playing (pid %d): Clean Relaunch is off, handing the request over", pid);
+            } else if (spotifySceneForeground()) {
+                SPLog(@"Spotify is frontmost (pid %d): not killing it, handing the request over", pid);
+            } else {
+                SPLog(@"Spotify is running but not playing (pid %d): closing it so it launches clean", pid);
+                kill(pid, SIGKILL);
+                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ sendSpotifyCommandNow(line, launch); });
+                return;
+            }
         }
     }
     sendSpotifyCommandNow(line, launch);
@@ -1449,18 +2002,70 @@ static void relayWait(NSString *line, int attempt) {
     NSString *path = spotifyFile(@"zefyreborn.result");
     NSString *reply = path ? [NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:nil] : nil;
     if (reply.length) { sbResult([reply stringByTrimmingCharactersInSet:NSCharacterSet.newlineCharacterSet]); return; }
-    if (attempt >= 40) { sbResult(@"No answer from Spotify"); return; }
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ relayWait(line, attempt + 1); });
+    if (attempt >= 200) { sbResult(@"No answer from Spotify"); return; }   // 200 x 0.05 s
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.05 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ relayWait(line, attempt + 1); });
+}
+
+static BOOL sbOpenURLString(NSString *url);
+static BOOL sbOpenURLString(NSString *url) {
+    Class ws = NSClassFromString(@"LSApplicationWorkspace");
+    id shared = ws ? ((id (*)(id, SEL))objc_msgSend)(ws, NSSelectorFromString(@"defaultWorkspace")) : nil;
+    SEL open = NSSelectorFromString(@"openURL:withOptions:");
+    if (!shared || ![shared respondsToSelector:open]) return NO;
+    return ((BOOL (*)(id, SEL, id, id))objc_msgSend)(shared, open, [NSURL URLWithString:url], nil);
+}
+
+// Polls Spotify's reply file, then hands it to the block (nil when it never came).
+static void waitSpotifyResult(void (^then)(NSString *reply), int attempt) {
+    NSString *path = spotifyFile(@"zefyreborn.result");
+    NSString *reply = path ? [NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:nil] : nil;
+    reply = [reply stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    if (reply.length) { then(reply); return; }
+    if (attempt >= 160) { SPLog(@"album: no reply from Spotify"); then(nil); return; }
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.05 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ waitSpotifyResult(then, attempt + 1); });
 }
 
 static void handleRelay(NSString *name, NSString *arg) {
+    // Only skip the launch when Spotify is already awake (playing); a paused app may be suspended and would never
+    // see the command file. Launching on every call added a second to each command.
+    Class mc = NSClassFromString(@"SBMediaController");
+    BOOL awake = spotifyPID() > 1 && mc && [[mc sharedInstance] isPlaying];
+    if ([name isEqualToString:@"album-open"] || [name isEqualToString:@"album-queue"] ||
+        [name isEqualToString:@"artist-open"] || [name isEqualToString:@"artist-queue"]) {
+        // One hop: ask Spotify for the album or artist, open its page here, and for queue also arm it.
+        BOOL isArtist = [name hasPrefix:@"artist"];
+        NSString *kind = isArtist ? @"artist" : @"album";
+        NSString *prefix = isArtist ? @"spotify:artist:" : @"spotify:album:";
+        NSString *path = spotifyFile(@"zefyreborn.result");
+        if (path) [NSFileManager.defaultManager removeItemAtPath:path error:nil];
+        sendSpotifyCommandEx([NSString stringWithFormat:@"zefyreborn:cmd %@-uri", kind], !awake);
+        BOOL queue = [name hasSuffix:@"queue"];
+        BOOL openPage = [arg rangeOfString:@"noopen"].location == NSNotFound;
+        BOOL noSkip = [arg rangeOfString:@"noskip"].location != NSNotFound;
+        BOOL noShuffle = [arg rangeOfString:@"noshuffle"].location != NSNotFound;
+        BOOL shuffle = !isArtist && [arg rangeOfString:@"shuffle"].location != NSNotFound;
+        waitSpotifyResult(^(NSString *target) {
+            if (![target hasPrefix:prefix]) { sbResult(isArtist ? @"No artist for the playing track" : @"No album for the playing track"); return; }
+            // Spotify navigates to it itself; the system openURL path took ten seconds here.
+            if (openPage) sendSpotifyCommandEx([NSString stringWithFormat:@"zefyreborn:cmd %@-open %@", kind, target], YES);
+            if (!queue) { sbResult([@"Opened " stringByAppendingString:target]); return; }
+            if (path) [NSFileManager.defaultManager removeItemAtPath:path error:nil];
+            NSString *command = [NSString stringWithFormat:@"zefyreborn:cmd %@-queue %@", kind, target];
+            if (noSkip) command = [command stringByAppendingString:@" noskip"];
+            if (noShuffle) command = [command stringByAppendingString:@" noshuffle"];
+            if (shuffle) command = [command stringByAppendingString:@" shuffle"];
+            sendSpotifyCommandEx(command, NO);
+            waitSpotifyResult(^(NSString *reply) { sbResult(reply ?: @"No answer from Spotify"); }, 0);
+        }, 0);
+        return;
+    }
     if ([name isEqualToString:@"relay"]) {
-        sendSpotifyCommandEx(arg, YES);
+        sendSpotifyCommandEx(arg, !awake);
         sbResult(@"ok");
     } else if ([name isEqualToString:@"relay-wait"]) {
         NSString *path = spotifyFile(@"zefyreborn.result");
         if (path) [NSFileManager.defaultManager removeItemAtPath:path error:nil];   // a stale reply must not answer this request
-        sendSpotifyCommandEx(arg, YES);
+        sendSpotifyCommandEx(arg, !awake);
         relayWait(arg, 0);
     } else if (debugEnabled() && [name isEqualToString:@"spotify-debug"]) {
         // Debug: switch Spotify's own debug log on or off from SpringBoard (the shell cannot reach the folder on iOS 15).
@@ -1510,8 +2115,13 @@ static void handleSBCommand(NSString *line) {
     NSString *arg = sp.location == NSNotFound ? @"" : [line substringFromIndex:sp.location + 1];
     SPLog(@"sb command: %@", line);
     if ([name isEqualToString:@"ping"]) sbResult(@"pong");
+    else if ([name isEqualToString:@"openurl"]) {
+        // Opening a spotify: link from SpringBoard goes through the app's own URL handling and brings it forward.
+        BOOL ok = sbOpenURLString(arg);
+        SPLog(@"openurl %@ -> %d", arg, ok);   // no reply: the BOOL is unreliable and a late answer would race the next command
+    }
     else if ([name isEqualToString:@"sleep"]) handleSleep(arg);
-    else if ([name isEqualToString:@"relay"] || [name isEqualToString:@"relay-wait"] || [name isEqualToString:@"nowplaying"] || [name isEqualToString:@"spotify-debug"] || [name isEqualToString:@"spotify-log"]) handleRelay(name, arg);
+    else if ([name isEqualToString:@"relay"] || [name isEqualToString:@"relay-wait"] || [name isEqualToString:@"nowplaying"] || [name isEqualToString:@"spotify-debug"] || [name isEqualToString:@"spotify-log"] || [name isEqualToString:@"album-open"] || [name isEqualToString:@"album-queue"] || [name isEqualToString:@"artist-open"] || [name isEqualToString:@"artist-queue"]) handleRelay(name, arg);
     else if (debugEnabled() && [name isEqualToString:@"probe-classes"]) probeClasses(arg);
     else if (debugEnabled() && [name isEqualToString:@"probe-class"]) probeClass(arg);
     else if (debugEnabled() && [name isEqualToString:@"probe-ivars"]) probeIvars(arg);

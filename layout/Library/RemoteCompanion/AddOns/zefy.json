@@ -296,6 +296,82 @@
       }
     },
     {
+      "command": "album open",
+      "name": "Open Album",
+      "icon": "arrow.up.forward.app",
+      "run": [
+        {
+          "exec": [
+            "/var/jb/bin/sh",
+            "/var/jb/usr/bin/zefy",
+            "--album-open"
+          ]
+        }
+      ],
+      "banner": {
+        "title": "Spotify",
+        "icon": "arrow.up.forward.app",
+        "subtitle": "Open Album"
+      }
+    },
+    {
+      "command": "album queue",
+      "name": "Play Album Next",
+      "icon": "text.badge.plus",
+      "run": [
+        {
+          "exec": [
+            "/var/jb/bin/sh",
+            "/var/jb/usr/bin/zefy",
+            "--album-queue"
+          ]
+        }
+      ],
+      "banner": {
+        "title": "Spotify",
+        "icon": "text.badge.plus",
+        "subtitle": "Album Queued"
+      }
+    },
+    {
+      "command": "artist open",
+      "name": "Open Artist",
+      "icon": "arrow.up.forward.app",
+      "run": [
+        {
+          "exec": [
+            "/var/jb/bin/sh",
+            "/var/jb/usr/bin/zefy",
+            "--artist-open"
+          ]
+        }
+      ],
+      "banner": {
+        "title": "Spotify",
+        "icon": "arrow.up.forward.app",
+        "subtitle": "Open Artist"
+      }
+    },
+    {
+      "command": "artist queue",
+      "name": "Play Artist Next",
+      "icon": "text.badge.plus",
+      "run": [
+        {
+          "exec": [
+            "/var/jb/bin/sh",
+            "/var/jb/usr/bin/zefy",
+            "--artist-queue"
+          ]
+        }
+      ],
+      "banner": {
+        "title": "Spotify",
+        "icon": "text.badge.plus",
+        "subtitle": "Artist Queued"
+      }
+    },
+    {
       "command": "seek",
       "name": "Seek",
       "icon": "goforward.15",
