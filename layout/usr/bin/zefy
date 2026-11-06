@@ -42,7 +42,10 @@ Usage: zefy [option] [value]
                    add or remove the playing track in your saved playlist
   --setmyplaylist <playlist>
                    save the playlist the three options above use
-  --radio [uri]    play radio from a track, album, artist or playlist; none = the playing track
+  --radio [uri] [--now] [--no-open]
+                   queue radio after the playing track (from a track, album, artist or playlist URI; none =
+                   the playing track) and open its station page; --now plays it right away, --no-open leaves
+                   the page closed. Run it again to cancel a queued station.
   --likedsongs     play Liked Songs
   --playlist <name> [--open]  play a playlist from your library by name
   --album <name> [--open]     play a saved album by name
@@ -127,7 +130,20 @@ case "$1" in
     --myplaylist) mine; line="${m}:play"; foreground=1 ;;
     --addtomyplaylist) mine; line="zefyreborn:cmd playlist-add $m" ;;
     --removefrommyplaylist) mine; line="zefyreborn:cmd playlist-remove $m" ;;
-    --radio) if [ $# -ge 2 ]; then line="zefyreborn:cmd radio $2"; else line="zefyreborn:cmd radio"; fi ;;
+    --radio)
+        shift; uri=; now=; open=1
+        for a in "$@"; do
+            case "$a" in
+                --now) now=now ;;
+                --no-open) open=0 ;;
+                *) uri="$a" ;;
+            esac
+        done
+        line="zefyreborn:cmd radio"
+        [ -n "$uri" ] && line="$line $uri"
+        [ -n "$now" ] && line="$line now"
+        [ $open -eq 0 ] && line="$line noopen"
+        wait_result=1 ;;
     --randomrecent) line="zefyreborn:cmd random recent" ;;
     --randomlibrary) line="zefyreborn:cmd random library" ;;
     --randomalbum) line="zefyreborn:cmd random albums" ;;

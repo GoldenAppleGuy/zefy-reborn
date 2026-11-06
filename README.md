@@ -61,7 +61,9 @@ zefy -a <playlist-uri>  add the playing track to a playlist
 zefy -d <playlist-uri>  remove the playing track from a playlist
 zefy --setmyplaylist <playlist-uri>
 zefy --myplaylist | --addtomyplaylist | --removefrommyplaylist
-zefy --radio [uri]      radio from a track, album, artist or playlist; none = the playing track
+zefy --radio [uri]      queue radio after the playing track from a track, album, artist or playlist; none =
+                        the playing track. Opens the station page; --now plays it immediately, --no-open keeps
+                        the page closed, and running it again cancels
 zefy --likedsongs       play Liked Songs
 zefy --playlist <name>  play a playlist from your library by name (partial names work)
 zefy --album <name>     play a saved album by name
@@ -82,7 +84,7 @@ Names with spaces need quotes, for example `zefy --album "abbey road"`. The `-a`
 
 Adding to or removing from a playlist checks first and only changes what needs changing, so repeating a command is safe. The saved playlist for the `--myplaylist` options is kept in the tweak's preferences. The random picks and `--likedsongs` read the same lists Spotify shows for CarPlay (`spotify:recently-played`, `spotify:playlists`, `spotify:collection:albums`) through its content controller. Home, Daily Mixes and "made for you" are not available this way: resolving `spotify:home` fails with a Home provider error on a free account.
 
-`--album-queue` and `--artist-queue` cannot hand Spotify a real queue entry: it only queues single tracks. Instead the album or artist is written to a small file and started when the current track changes, in the order its play button uses (an album in order unless `--shuffle`, an artist shuffled). If that would replay the song already playing, it skips to the next one.
+`--album-queue`, `--artist-queue` and `--radio` cannot hand Spotify a real queue entry: it only queues single tracks. Instead the album, artist or station is written to a small file and started when the current track changes, in the order its play button uses (an album in order unless `--shuffle`, an artist shuffled, radio as its own station). If that would replay the song already playing, it skips to the next one.
 
 Run it as `mobile`. Nothing shows the "Open in Spotify" prompt, and a link works even when Spotify is not running. `uiopen --url` shows that prompt, and `uiopen --bundleid` drops the URL, which is why the command passes the request to the tweak through a file instead: `zefy` writes `zefyreborn.cmd` in Spotify's Documents folder; the tweak watches that folder, and checks once after launch.
 

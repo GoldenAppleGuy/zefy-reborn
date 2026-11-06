@@ -2,6 +2,9 @@
 
 Private build. Versions are listed newest first.
 
+## 1.0.5
+- `zefy --radio` now queues the station after the playing track and opens its page instead of cutting the current song off. The page comes back when the station actually starts, in case it moved while the track was playing. `--now` plays it immediately, `--no-open` leaves the page closed, and running it again cancels the queued station. The source can still be a track, album, artist or playlist URI, or nothing for the playing track.
+
 ## 1.0.4
 - `zefy --playlist`, `--album`, `--artist` and `--find` accept `--open`, which brings the matched playlist, album or artist page to the screen while it plays. Without it they only start playback, as before.
 

@@ -910,6 +910,35 @@ static void playPendingArtist(id state) {
     } @catch (NSException *e) { SPLog(@"pending artist: shuffle change failed: %@", e); dispatch_async(dispatch_get_main_queue(), start); }
 }
 
+// A radio station that should start when the current track ends ("queue radio").
+static NSString *pendingRadioPath(void) {
+    return [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject stringByAppendingPathComponent:@"zefyreborn.pendingradio"];
+}
+
+static NSString *pendingRadio(void) {
+    NSString *text = [NSString stringWithContentsOfFile:pendingRadioPath() encoding:NSUTF8StringEncoding error:nil];
+    NSString *first = [[text componentsSeparatedByString:@"\n"] firstObject];
+    first = [first stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    return [first hasPrefix:@"spotify:station:"] ? first : nil;
+}
+
+static void navigateToPage(NSString *uri);
+
+// Called from the player state hook when the track changes.
+static void playPendingRadio(id state) {
+    (void)state;
+    NSString *pending = pendingRadio();
+    if (!pending) return;
+    [[NSFileManager defaultManager] removeItemAtPath:pendingRadioPath() error:nil];
+    SPLog(@"pending radio: starting %@ after the track change", pending);
+    startPlayback(pending, NO);
+    // The page may have moved while the track played, so bring the station page up again when it starts.
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        SPLog(@"pending radio: opening %@", pending);
+        navigateToPage(pending);
+    });
+}
+
 // Opens a page inside Spotify by handing its scene delegate the same kind of URL context a tapped link produces.
 // Going through SpringBoard's openURL instead blocks for about ten seconds on this iOS version.
 static void navigateToPage(NSString *uri) {
@@ -985,6 +1014,7 @@ static void runAlbumCommand(NSString *name, NSString *arg, int attempt) {
         if (shuffle) text = [text stringByAppendingString:@"\nshuffle"];
         [text writeToFile:pendingAlbumPath() atomically:YES encoding:NSUTF8StringEncoding error:nil];
         [[NSFileManager defaultManager] removeItemAtPath:pendingArtistPath() error:nil];   // only one can go next
+        [[NSFileManager defaultManager] removeItemAtPath:pendingRadioPath() error:nil];
         writeResult(shuffle ? @"Album plays after this track, shuffled (run it again to cancel)"
                             : firstSong ? @"Album plays after this track, from its second song (run it again to cancel)"
                                         : @"Album plays after this track (run it again to cancel)");
@@ -1034,6 +1064,7 @@ static void runArtistCommand(NSString *name, NSString *arg, int attempt) {
         if (noShuffle) text = [text stringByAppendingString:@"\nnoshuffle"];
         [text writeToFile:pendingArtistPath() atomically:YES encoding:NSUTF8StringEncoding error:nil];
         [[NSFileManager defaultManager] removeItemAtPath:pendingAlbumPath() error:nil];   // only one can go next
+        [[NSFileManager defaultManager] removeItemAtPath:pendingRadioPath() error:nil];
         writeResult(@"Artist plays after this track (run it again to cancel)");
         });
     };
@@ -1279,10 +1310,36 @@ static void runCommandLineUnsafe(NSString *line) {
         return;
     }
     if ([name isEqualToString:@"radio"]) {
-        // Radio from the given track, album, artist or playlist URI, else from the playing track.
-        NSString *uri = arg.length ? arg : currentTrackURI(findController()).absoluteString;
-        if (![uri hasPrefix:@"spotify:"]) { SPLog(@"radio: no source"); return; }
-        startPlayback([@"spotify:station:" stringByAppendingString:[uri substringFromIndex:8]], NO);
+        // Radio is queued after the playing track unless "now" is given, and its station page opens unless
+        // "noopen" is given. The source is a track, album, artist or playlist URI, else the playing track.
+        NSArray *parts = arg.length ? [arg componentsSeparatedByString:@" "] : @[];
+        BOOL now = [parts containsObject:@"now"];
+        BOOL noOpen = [parts containsObject:@"noopen"];
+        NSString *source = nil;
+        for (NSString *p in parts) if ([p hasPrefix:@"spotify:"]) { source = p; break; }
+        NSString *uri = source.length ? source : currentTrackURI(findController()).absoluteString;
+        if (![uri hasPrefix:@"spotify:"]) { SPLog(@"radio: no source"); writeResult(@"Radio needs a track to start from"); return; }
+        NSString *station = source.length && [source hasPrefix:@"spotify:station:"]
+            ? source : [@"spotify:station:" stringByAppendingString:[uri substringFromIndex:8]];
+        // Asking for the queued station again cancels it, like the album and artist queues.
+        if (!now && [station isEqualToString:pendingRadio() ?: @""]) {
+            [[NSFileManager defaultManager] removeItemAtPath:pendingRadioPath() error:nil];
+            SPLog(@"radio: cleared %@", station);
+            writeResult(@"Radio cleared, nothing will start next");
+            return;
+        }
+        if (!noOpen) navigateToPage(station);
+        if (now || !currentTrackURI(findController()).absoluteString.length) {
+            SPLog(@"radio: playing %@", station);
+            startPlayback(station, NO);
+            writeResult(@"Radio playing");
+            return;
+        }
+        [station writeToFile:pendingRadioPath() atomically:YES encoding:NSUTF8StringEncoding error:nil];
+        [[NSFileManager defaultManager] removeItemAtPath:pendingAlbumPath() error:nil];
+        [[NSFileManager defaultManager] removeItemAtPath:pendingArtistPath() error:nil];
+        SPLog(@"radio: will start %@ after this track", station);
+        writeResult(@"Radio plays after this track (run it again to cancel)");
         return;
     }
     if ([name isEqualToString:@"like"] || [name isEqualToString:@"liked"] || [name isEqualToString:@"playlist-has"] || [name isEqualToString:@"playlist-add"] || [name isEqualToString:@"playlist-remove"]) { runCollectionCommand(name, arg, 0); return; }
@@ -1455,6 +1512,7 @@ static void onPlayerStateUnsafe(id state) {
     if (trackChanged) writeRecents();
     if (trackChanged) playPendingAlbum(state);
     if (trackChanged) playPendingArtist(state);
+    if (trackChanged) playPendingRadio(state);
     if (trackChanged && uri.length) {
         id coll = findInstance(kCollectionClass);
         if (coll) {
