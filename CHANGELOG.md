@@ -2,6 +2,11 @@
 
 Private build. Versions are listed newest first.
 
+## 1.0.3
+- Play Album Next, Play Artist Next and queued radio: `zefy --album-next`, `--artist-next` and `--radio --next` start the playing track's album, artist or a station after the current track. Running one again cancels it. (Thanks to saihgupr.)
+- `zefy --album-open` and `--artist-open` open the playing track's album or artist page, and `--open` shows the page for the play-by-name commands.
+- RemoteCompanion add-on: Open Album, Play Album Next, Open Artist and Play Artist Next, a When choice for Radio and a Page choice for Play by Name.
+
 ## 1.0.2
 - Spotify on screen is never closed before playback starts, and a link without a play flag no longer restarts Spotify; given to `zefy`, it opens the page. A new Clean Relaunch setting turns the restart off. (Thanks to saihgupr.)
 - Quick Play leaves Apple's Music app alone when it has a song loaded, so a paused Music session plays as usual. (Reported by saihgupr.)

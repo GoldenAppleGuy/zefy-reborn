@@ -497,6 +497,17 @@
               "value": "--artist"
             }
           ]
+        },
+        {
+          "id": "page",
+          "title": "Page",
+          "choices": [
+            {
+              "word": "show",
+              "label": "Show",
+              "value": "--open"
+            }
+          ]
         }
       ],
       "input": {
@@ -508,14 +519,11 @@
           "exec": [
             "{jbroot}/bin/sh",
             "{jbroot}/usr/bin/zefy",
-            "--find",
+            "{kind}",
+            "{page}",
             "{input}"
           ],
-          "as": "result",
-          "if": {
-            "var": "kind",
-            "unset": true
-          }
+          "as": "result"
         },
         {
           "exec": [
@@ -524,7 +532,38 @@
             "{kind}",
             "{input}"
           ],
-          "as": "result"
+          "as": "result",
+          "if": {
+            "var": "result",
+            "unset": true
+          }
+        },
+        {
+          "exec": [
+            "{jbroot}/bin/sh",
+            "{jbroot}/usr/bin/zefy",
+            "--find",
+            "{page}",
+            "{input}"
+          ],
+          "as": "result",
+          "if": {
+            "var": "result",
+            "unset": true
+          }
+        },
+        {
+          "exec": [
+            "{jbroot}/bin/sh",
+            "{jbroot}/usr/bin/zefy",
+            "--find",
+            "{input}"
+          ],
+          "as": "result",
+          "if": {
+            "var": "result",
+            "unset": true
+          }
         }
       ],
       "banner": {
@@ -621,11 +660,22 @@
           "exec": [
             "{jbroot}/bin/sh",
             "{jbroot}/usr/bin/zefy",
-            "--radio"
+            "--radio",
+            "{when}",
+            "{input}"
+          ],
+          "as": "result"
+        },
+        {
+          "exec": [
+            "{jbroot}/bin/sh",
+            "{jbroot}/usr/bin/zefy",
+            "--radio",
+            "{when}"
           ],
           "as": "result",
           "if": {
-            "var": "input",
+            "var": "result",
             "unset": true
           }
         },
@@ -636,13 +686,275 @@
             "--radio",
             "{input}"
           ],
-          "as": "result"
+          "as": "result",
+          "if": {
+            "var": "result",
+            "unset": true
+          }
+        },
+        {
+          "exec": [
+            "{jbroot}/bin/sh",
+            "{jbroot}/usr/bin/zefy",
+            "--radio"
+          ],
+          "as": "result",
+          "if": {
+            "var": "result",
+            "unset": true
+          }
         }
       ],
       "banner": {
         "title": "Spotify",
         "subtitle": "{result}",
         "icon": "dot.radiowaves.left.and.right"
+      },
+      "options": [
+        {
+          "id": "when",
+          "title": "When",
+          "choices": [
+            {
+              "word": "now",
+              "label": "Now",
+              "value": "--now"
+            },
+            {
+              "word": "next",
+              "label": "Next",
+              "value": "--next"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "command": "album open",
+      "name": "Open Album",
+      "icon": "rectangle.stack",
+      "run": [
+        {
+          "exec": [
+            "{jbroot}/bin/sh",
+            "{jbroot}/usr/bin/zefy",
+            "--album-open"
+          ],
+          "as": "result"
+        }
+      ],
+      "banner": {
+        "title": "Spotify",
+        "subtitle": "{result}",
+        "icon": "rectangle.stack"
+      }
+    },
+    {
+      "command": "album next",
+      "name": "Play Album Next",
+      "icon": "text.insert",
+      "options": [
+        {
+          "id": "order",
+          "title": "Order",
+          "choices": [
+            {
+              "word": "inorder",
+              "label": "In Order",
+              "value": "--in-order"
+            },
+            {
+              "word": "shuffled",
+              "label": "Shuffled",
+              "value": "--shuffle"
+            }
+          ]
+        },
+        {
+          "id": "page",
+          "title": "Page",
+          "choices": [
+            {
+              "word": "show",
+              "label": "Show",
+              "value": "--open"
+            },
+            {
+              "word": "hide",
+              "label": "Don't Show",
+              "value": "--no-open"
+            }
+          ]
+        }
+      ],
+      "run": [
+        {
+          "exec": [
+            "{jbroot}/bin/sh",
+            "{jbroot}/usr/bin/zefy",
+            "--album-next",
+            "{order}",
+            "{page}"
+          ],
+          "as": "result"
+        },
+        {
+          "exec": [
+            "{jbroot}/bin/sh",
+            "{jbroot}/usr/bin/zefy",
+            "--album-next",
+            "{order}"
+          ],
+          "as": "result",
+          "if": {
+            "var": "result",
+            "unset": true
+          }
+        },
+        {
+          "exec": [
+            "{jbroot}/bin/sh",
+            "{jbroot}/usr/bin/zefy",
+            "--album-next",
+            "{page}"
+          ],
+          "as": "result",
+          "if": {
+            "var": "result",
+            "unset": true
+          }
+        },
+        {
+          "exec": [
+            "{jbroot}/bin/sh",
+            "{jbroot}/usr/bin/zefy",
+            "--album-next"
+          ],
+          "as": "result",
+          "if": {
+            "var": "result",
+            "unset": true
+          }
+        }
+      ],
+      "banner": {
+        "title": "Spotify",
+        "subtitle": "{result}",
+        "icon": "text.insert"
+      }
+    },
+    {
+      "command": "artist open",
+      "name": "Open Artist",
+      "icon": "person.crop.circle",
+      "run": [
+        {
+          "exec": [
+            "{jbroot}/bin/sh",
+            "{jbroot}/usr/bin/zefy",
+            "--artist-open"
+          ],
+          "as": "result"
+        }
+      ],
+      "banner": {
+        "title": "Spotify",
+        "subtitle": "{result}",
+        "icon": "person.crop.circle"
+      }
+    },
+    {
+      "command": "artist next",
+      "name": "Play Artist Next",
+      "icon": "text.insert",
+      "options": [
+        {
+          "id": "order",
+          "title": "Order",
+          "choices": [
+            {
+              "word": "shuffled",
+              "label": "Shuffled",
+              "value": "--shuffle"
+            },
+            {
+              "word": "inorder",
+              "label": "In Order",
+              "value": "--no-shuffle"
+            }
+          ]
+        },
+        {
+          "id": "page",
+          "title": "Page",
+          "choices": [
+            {
+              "word": "show",
+              "label": "Show",
+              "value": "--open"
+            },
+            {
+              "word": "hide",
+              "label": "Don't Show",
+              "value": "--no-open"
+            }
+          ]
+        }
+      ],
+      "run": [
+        {
+          "exec": [
+            "{jbroot}/bin/sh",
+            "{jbroot}/usr/bin/zefy",
+            "--artist-next",
+            "{order}",
+            "{page}"
+          ],
+          "as": "result"
+        },
+        {
+          "exec": [
+            "{jbroot}/bin/sh",
+            "{jbroot}/usr/bin/zefy",
+            "--artist-next",
+            "{order}"
+          ],
+          "as": "result",
+          "if": {
+            "var": "result",
+            "unset": true
+          }
+        },
+        {
+          "exec": [
+            "{jbroot}/bin/sh",
+            "{jbroot}/usr/bin/zefy",
+            "--artist-next",
+            "{page}"
+          ],
+          "as": "result",
+          "if": {
+            "var": "result",
+            "unset": true
+          }
+        },
+        {
+          "exec": [
+            "{jbroot}/bin/sh",
+            "{jbroot}/usr/bin/zefy",
+            "--artist-next"
+          ],
+          "as": "result",
+          "if": {
+            "var": "result",
+            "unset": true
+          }
+        }
+      ],
+      "banner": {
+        "title": "Spotify",
+        "subtitle": "{result}",
+        "icon": "text.insert"
       }
     },
     {

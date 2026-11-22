@@ -33,17 +33,25 @@ zefy -d <playlist>      remove the playing track from a playlist
 zefy --setmyplaylist <playlist>
 zefy --myplaylist | --addtomyplaylist | --removefrommyplaylist
 zefy --radio [uri]      radio from a track, album, artist or playlist; none = the playing track
+zefy --radio [uri] --next [--no-open]  play the radio after the playing track (again cancels)
+zefy --album-open       open the playing track's album page
+zefy --album-next [--shuffle] [--no-open] [--no-skip]  play that album after this track, in order
+zefy --artist-open      open the playing track's artist page
+zefy --artist-next [--no-shuffle] [--no-open] [--no-skip]  play that artist after this track, shuffled
 zefy --likedsongs       play Liked Songs
 zefy --playlist <name>  play a playlist from your library by name (partial names work)
 zefy --album <name>     play a saved album by name
 zefy --artist <name>    play a followed artist by name
 zefy --find <name>      best match among playlists, albums, artists and recents
+                        (add --open to the four by-name commands to show the page too)
 zefy --status           what is playing: title - artist (album) [playing|paused] (liked)
 zefy --sleep <minutes>  pause after that long; --sleep off cancels, --sleep status shows the time left
 zefy --randomrecent     play a random item from your recently played
 zefy --randomlibrary    play a random playlist from your library
 zefy --randomalbum      play a random saved album
 ```
+
+Spotify can only queue single tracks, so `--album-next`, `--artist-next` and `--radio --next` remember the album, artist or station (in `zefyreborn.pending` in Spotify's Documents folder) and start it when the track changes. Only one can be next; arming another replaces it, and running the same one again cancels it. An album plays in order and an artist shuffled, like the play buttons on their pages. When the playing song is the album's first one, the album starts at its second song, and an artist that would start on the song just heard skips it; `--no-skip` turns that off. The album and artist come from the playing track's metadata (`album_uri`, `artist_uri`). Pages open inside Spotify through its scene delegate, and Spotify is brought to the front for them. (Contributed by saihgupr.)
 
 Adding to or removing from a playlist checks first and only changes what needs changing, so repeating a command is safe. Spotify's add-or-remove call toggles and its check can only answer yes or no, so the tweak checks again after the change and, if the track is still on the wrong side, changes it once more: the playlist ends as asked or as it was. The saved playlist for the `--myplaylist` options is kept in the tweak's preferences. The random picks and `--likedsongs` read the same lists Spotify shows for CarPlay (`spotify:recently-played`, `spotify:playlists`, `spotify:collection:albums`) through its content controller. Home, Daily Mixes and "made for you" are not available this way: resolving `spotify:home` fails with a Home provider error on a free account.
 

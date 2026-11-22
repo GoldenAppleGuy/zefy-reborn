@@ -46,6 +46,15 @@
       "views": [
         {
           "class": "DepictionSubheaderView",
+          "title": "1.0.3",
+          "useBoldText": true
+        },
+        {
+          "class": "DepictionMarkdownView",
+          "markdown": "- Play Album Next, Play Artist Next and queued radio start the playing track's album, artist or a station after the current track (thanks to saihgupr).\n- Open the playing track's album or artist page, and show the page when playing by name.\n- RemoteCompanion add-on: Open Album, Play Album Next, Open Artist and Play Artist Next."
+        },
+        {
+          "class": "DepictionSubheaderView",
           "title": "1.0.2",
           "useBoldText": true
         },

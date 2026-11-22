@@ -739,6 +739,199 @@ static void runCollectionCommand(NSString *name, NSString *arg, int attempt) {
     }
 }
 
+// ---- album, artist and radio of the playing track (ported from saihgupr's GoldenAppleGuy/zefy-reborn#3) ------
+// The player state's track has metadata with album_uri and artist_uri (Spotify 8.9 and 9.x). Spotify can queue
+// single tracks only, so "play next" for an album, artist or station is kept in Documents/zefyreborn.pending and
+// started when the track changes. Only one can be next: arming one replaces the other.
+
+static NSString *playableURI(NSString *uri);
+
+static NSDictionary *playingMetadata(id state) {
+    id meta = nil;
+    @try { meta = [[state valueForKey:@"track"] valueForKey:@"metadata"]; } @catch (NSException *e) {}
+    return [meta isKindOfClass:NSDictionary.class] ? meta : nil;
+}
+
+// The first spotify:<kind>:<id> in the text (also the library form spotify:user:<name>:collection:<kind>:<id>).
+static NSString *uriOfKind(NSString *text, NSString *kind) {
+    if (![text isKindOfClass:NSString.class] || !text.length) return nil;
+    NSString *pattern = [NSString stringWithFormat:@"spotify:[^\\s,]*?%@:[A-Za-z0-9]+", kind];
+    NSRegularExpression *re = [NSRegularExpression regularExpressionWithPattern:pattern options:0 error:nil];
+    NSTextCheckingResult *m = [re firstMatchInString:text options:0 range:NSMakeRange(0, text.length)];
+    return m ? playableURI([text substringWithRange:m.range]) : nil;
+}
+
+// The album or artist of the playing track, from its metadata; nil when Spotify doesn't say.
+static NSString *playingURIOfKind(id c, NSString *kind) {
+    id ps = c ? ((id (*)(id, SEL))objc_msgSend)(c, @selector(playerState)) : nil;
+    NSDictionary *meta = playingMetadata(ps);
+    NSString *found = uriOfKind([meta[[kind stringByAppendingString:@"_uri"]] description], kind);
+    if (!found && [kind isEqualToString:@"artist"]) {
+        @try { found = uriOfKind([[[ps valueForKey:@"track"] valueForKey:@"artistURI"] description], kind); } @catch (NSException *e) {}
+    }
+    if (!found && [kind isEqualToString:@"album"]) {
+        @try { found = uriOfKind([[ps valueForKey:@"contextURI"] description], kind); } @catch (NSException *e) {}
+    }
+    SPLog(@"playing %@: %@", kind, found ?: @"(none)");
+    return found;
+}
+
+// Opens a page inside Spotify by handing its scene delegate the URL context a tapped link produces. Unlike the
+// web activity (navigateTo), this also takes spotify: links that have no web page, such as a station.
+static void navigateToPage(NSString *uri) {
+    Class ctxClass = NSClassFromString(@"UIOpenURLContext"), optClass = NSClassFromString(@"UISceneOpenURLOptions");
+    for (UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
+        id del = scene.delegate;
+        if (![del respondsToSelector:@selector(scene:openURLContexts:)]) continue;
+        id ctx = ctxClass ? [[ctxClass alloc] init] : nil;
+        @try {
+            [ctx setValue:[NSURL URLWithString:uri] forKey:@"URL"];
+            if (optClass) [ctx setValue:[[optClass alloc] init] forKey:@"options"];
+        } @catch (NSException *e) { SPLog(@"page: no URL context (%@)", e); ctx = nil; }
+        if (!ctx) break;
+        SPLog(@"page: %@ via %@", uri, NSStringFromClass([del class]));
+        ((void (*)(id, SEL, id, id))objc_msgSend)(del, @selector(scene:openURLContexts:), scene, [NSSet setWithObject:ctx]);
+        return;
+    }
+    navigateTo(uri);
+}
+
+static NSString *pendingPath(void) {
+    return [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject stringByAppendingPathComponent:@"zefyreborn.pending"];
+}
+
+// The pending entry as words: kind, URI, then flags (skipfirst, shuffle, noshuffle, open, track=<uri>).
+static NSArray *pendingWords(void) {
+    NSString *text = [NSString stringWithContentsOfFile:pendingPath() encoding:NSUTF8StringEncoding error:nil];
+    NSArray *words = [[text stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet] componentsSeparatedByString:@" "];
+    return words.count >= 2 && validLink(words[1]) ? words : nil;
+}
+
+static void clearPending(void) { [NSFileManager.defaultManager removeItemAtPath:pendingPath() error:nil]; }
+
+// Skips once when `check` says the player is on the song that shouldn't play again; gives up after `tries` seconds.
+static void skipWhen(BOOL (^check)(id c, id ps, BOOL *done), int tries) {
+    id c = findController();
+    id ps = c ? ((id (*)(id, SEL))objc_msgSend)(c, @selector(playerState)) : nil;
+    BOOL done = NO;
+    if (ps && check(c, ps, &done)) {
+        SPLog(@"next: skipping a song that would repeat");
+        ((void (*)(id, SEL, id))objc_msgSend)(c, @selector(skipToNextTrackWithCompletionHandler:), ^(void *x) { SPLog(@"next: skipped (%p)", x); });
+        return;
+    }
+    if (done || tries <= 0) return;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ skipWhen(check, tries - 1); });
+}
+
+// Called on every track change: starts the album, artist or station that was armed to play next.
+static void playPending(id state) {
+    NSArray *words = pendingWords();
+    if (!words) return;
+    NSString *kind = words[0], *uri = words[1];
+    clearPending();   // first, so the track change this start causes finds nothing
+    id c = findController();
+    if (!c) { SPLog(@"next: no playback controller"); return; }
+    if ([kind isEqualToString:@"radio"]) {
+        SPLog(@"next: starting radio %@", uri);
+        startPlayback(uri, NO);
+        if ([words containsObject:@"open"]) dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ navigateToPage(uri); });
+        return;
+    }
+    BOOL isAlbum = [kind isEqualToString:@"album"];
+    if (isAlbum && [uri isEqualToString:uriOfKind([playingMetadata(state)[@"album_uri"] description], @"album") ?: @""]) {
+        SPLog(@"next: album %@ is already playing", uri);
+        return;
+    }
+    // An album's play button plays in order and an artist's shuffles; the flags change that.
+    BOOL shuffle = isAlbum ? [words containsObject:@"shuffle"] : ![words containsObject:@"noshuffle"];
+    BOOL skipFirst = [words containsObject:@"skipfirst"];
+    NSString *armingTrack = nil;
+    for (NSString *w in words) if ([w hasPrefix:@"track="]) armingTrack = [w substringFromIndex:6];
+    SPLog(@"next: starting %@ %@ (shuffle %d)", kind, uri, shuffle);
+    void (^start)(void) = ^{
+        startPlayback(uri, NO);
+        if (isAlbum && skipFirst) {
+            // The album started over on its first song, which just played; skip it once it is really playing.
+            skipWhen(^BOOL(id c2, id ps, BOOL *done) {
+                NSDictionary *meta = playingMetadata(ps);
+                if (![uriOfKind([meta[@"album_uri"] description], @"album") isEqualToString:uri]) return NO;
+                *done = YES;
+                return [meta[@"album_track_number"] intValue] == 1;
+            }, 8);
+        } else if (!isAlbum && armingTrack.length) {
+            // The artist can start on the song that was playing when it was armed.
+            skipWhen(^BOOL(id c2, id ps, BOOL *done) {
+                NSString *context = nil;
+                @try { context = [[ps valueForKey:@"contextURI"] description]; } @catch (NSException *e) {}
+                if (![uriOfKind(context, @"artist") isEqualToString:uri]) return NO;
+                *done = YES;
+                return [currentTrackURI(c2).absoluteString isEqualToString:armingTrack];
+            }, 8);
+        }
+    };
+    SEL shuffleSel = shuffle ? @selector(enableShuffleWithCompletionHandler:) : @selector(disableShuffleWithCompletionHandler:);
+    ((void (*)(id, SEL, id))objc_msgSend)(c, shuffleSel, ^(void *x) { dispatch_async(dispatch_get_main_queue(), start); });
+}
+
+// album-open | album-next [noopen] [noskip] [shuffle] | artist-open | artist-next [noopen] [noskip] [noshuffle]
+static void runPageCommand(NSString *name, NSString *arg, int attempt) {
+    id c = findController();
+    BOOL isAlbum = [name hasPrefix:@"album"];
+    NSString *kind = isAlbum ? @"album" : @"artist", *Kind = isAlbum ? @"Album" : @"Artist";
+    NSString *target = c ? playingURIOfKind(c, kind) : nil;
+    if (!target) {
+        // Just after a launch the player state can be empty for a moment.
+        if (attempt < 10) { dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ runPageCommand(name, arg, attempt + 1); }); return; }
+        reply(c ? [NSString stringWithFormat:@"No %@ for the playing track", kind] : @"Spotify isn't ready");
+        return;
+    }
+    NSArray *flags = arg.length ? [arg componentsSeparatedByString:@" "] : @[];
+    BOOL open = ![flags containsObject:@"noopen"];
+    if ([name hasSuffix:@"-open"]) { navigateToPage(target); reply([Kind stringByAppendingString:@" page opened"]); return; }
+    NSArray *pending = pendingWords();
+    if (pending && [pending[0] isEqualToString:kind] && [pending[1] isEqualToString:target]) {
+        clearPending();
+        reply([Kind stringByAppendingString:@" no longer plays next"]);
+        return;
+    }
+    NSMutableArray *entry = [NSMutableArray arrayWithObjects:kind, target, nil];
+    NSString *answer = [Kind stringByAppendingString:@" plays next"];
+    id ps = ((id (*)(id, SEL))objc_msgSend)(c, @selector(playerState));
+    if (isAlbum) {
+        NSDictionary *meta = playingMetadata(ps);
+        BOOL firstSong = [meta[@"album_track_number"] intValue] == 1 && [meta[@"album_disc_number"] intValue] <= 1;
+        if (firstSong && ![flags containsObject:@"noskip"]) { [entry addObject:@"skipfirst"]; answer = @"Album plays next, from its second song"; }
+        if ([flags containsObject:@"shuffle"]) { [entry addObject:@"shuffle"]; answer = @"Album plays next, shuffled"; }
+    } else {
+        if (![flags containsObject:@"noskip"]) {
+            NSString *track = currentTrackURI(c).absoluteString;
+            if (track.length) [entry addObject:[@"track=" stringByAppendingString:track]];
+        }
+        if ([flags containsObject:@"noshuffle"]) { [entry addObject:@"noshuffle"]; answer = @"Artist plays next, in order"; }
+    }
+    [[entry componentsJoinedByString:@" "] writeToFile:pendingPath() atomically:YES encoding:NSUTF8StringEncoding error:nil];
+    SPLog(@"next: armed %@", [entry componentsJoinedByString:@" "]);
+    if (open) navigateToPage(target);
+    reply(answer);
+}
+
+// radio [uri] [next] [noopen]: plays now unless "next"; "next" again for the same station cancels it.
+static void runRadioCommand(NSString *arg) {
+    NSArray *words = arg.length ? [arg componentsSeparatedByString:@" "] : @[];
+    BOOL next = [words containsObject:@"next"], open = next && ![words containsObject:@"noopen"];
+    NSString *source = nil;
+    for (NSString *w in words) if ([w hasPrefix:@"spotify:"]) source = w;
+    NSString *uri = source ?: currentTrackURI(findController()).absoluteString;
+    if (![uri hasPrefix:@"spotify:"]) { SPLog(@"radio: no source"); reply(@"Nothing is playing"); return; }
+    NSString *station = [uri hasPrefix:@"spotify:station:"] ? uri : [@"spotify:station:" stringByAppendingString:[uri substringFromIndex:8]];
+    if (!next || !currentTrackURI(findController())) { startPlaybackEx(station, NO, gRequest, @"Playing Radio"); return; }
+    NSArray *pending = pendingWords();
+    if (pending && [pending[0] isEqualToString:@"radio"] && [pending[1] isEqualToString:station]) { clearPending(); reply(@"Radio no longer plays next"); return; }
+    [[NSString stringWithFormat:@"radio %@%@", station, open ? @" open" : @""] writeToFile:pendingPath() atomically:YES encoding:NSUTF8StringEncoding error:nil];
+    if (open) navigateToPage(station);
+    reply(@"Radio plays next");
+}
+
 // ---- browsing Spotify's own content tree (the one CarPlay uses) -------------------------------------------
 
 // Resolves the children of a node such as spotify:collection:playlists and hands back the response object.
@@ -873,7 +1066,9 @@ static NSString *playableURI(NSString *uri) {
     return uri;
 }
 
-static void playByName(NSString *kind, NSString *query) {
+static void navigateToPage(NSString *uri);
+
+static void playByName(NSString *kind, NSString *query, BOOL open) {
     NSDictionary *sources = @{@"playlist": @[@"spotify:playlists"], @"album": @[@"spotify:collection:albums"], @"artist": @[@"spotify:collection:artists"],
                               @"any": @[@"spotify:playlists", @"spotify:collection:albums", @"spotify:collection:artists", @"spotify:recently-played"]};
     NSArray *parents = sources[kind];
@@ -894,6 +1089,7 @@ static void playByName(NSString *kind, NSString *query) {
         NSString *answer = [NSString stringWithFormat:@"Playing %@%@", [best valueForKey:@"title"], subtitle.length && ![subtitle isEqualToString:@"(null)"] ? [@" - " stringByAppendingString:subtitle] : @""];
         if ([uri containsString:@":collection:artist:"]) startPlaybackEx(playableURI(uri), NO, req, answer);
         else playItemEx(c, best, playableURI(uri), NO, YES, req, answer);
+        if (open) navigateToPage(playableURI(uri));
     });
 }
 
@@ -947,7 +1143,9 @@ static void runCommandLineUnsafe(NSString *line) {
     if ([name isEqualToString:@"random"]) { playRandom(arg); return; }
     if ([name isEqualToString:@"by-name"]) {
         NSRange sp = [arg rangeOfString:@" "];
-        playByName(sp.location == NSNotFound ? arg : [arg substringToIndex:sp.location], sp.location == NSNotFound ? @"" : [arg substringFromIndex:sp.location + 1]);
+        NSString *rest = sp.location == NSNotFound ? @"" : [arg substringFromIndex:sp.location + 1];
+        BOOL open = [rest hasPrefix:@"open "];   // "by-name <kind> open <name>": show the page too
+        playByName(sp.location == NSNotFound ? arg : [arg substringToIndex:sp.location], open ? [rest substringFromIndex:5] : rest, open);
         return;
     }
     if ([name isEqualToString:@"probe"]) { runProbe(arg); return; }
@@ -976,13 +1174,8 @@ static void runCommandLineUnsafe(NSString *line) {
         });
         return;
     }
-    if ([name isEqualToString:@"radio"]) {
-        // Radio from the given track, album, artist or playlist URI, else from the playing track.
-        NSString *uri = arg.length ? arg : currentTrackURI(findController()).absoluteString;
-        if (![uri hasPrefix:@"spotify:"]) { SPLog(@"radio: no source"); reply(@"Nothing is playing"); return; }
-        startPlaybackEx([@"spotify:station:" stringByAppendingString:[uri substringFromIndex:8]], NO, gRequest, @"Playing Radio");
-        return;
-    }
+    if ([name isEqualToString:@"radio"]) { runRadioCommand(arg); return; }
+    if ([@[@"album-open", @"album-next", @"artist-open", @"artist-next"] containsObject:name]) { runPageCommand(name, arg, 0); return; }
     if ([name isEqualToString:@"like"] || [name isEqualToString:@"liked"] || [name isEqualToString:@"playlist-has"] || [name isEqualToString:@"playlist-add"] || [name isEqualToString:@"playlist-remove"]) { runCollectionCommand(name, arg, 0); return; }
     if ([name isEqualToString:@"instances"]) { for (NSString *cn in [arg componentsSeparatedByString:@","]) scanForInstance(cn); return; }
     runControllerCommand(name, arg, 0);
@@ -1151,6 +1344,7 @@ static void onPlayerStateUnsafe(id state) {
     if (stateChanged) postNote("com.goldenappleguy.zefyreborn.playstate", playing);
     SPLog(@"now playing: %@ playing=%d", uri, playing);
     if (trackChanged) writeRecents();
+    if (trackChanged) playPending(state);
     if (trackChanged && uri.length) {
         id coll = findInstance(kCollectionClass);
         if (coll) {
@@ -1298,6 +1492,7 @@ static BOOL commandStartsPlayback(NSString *line) {
         return parseLink([NSURL URLWithString:line], &shuffle) != nil;
     }
     if ([line isEqualToString:kResumeCommand]) return YES;
+    if ([line hasPrefix:[kCommandPrefix stringByAppendingString:@"radio"]] && [[line componentsSeparatedByString:@" "] containsObject:@"next"]) return NO;   // waits for the playing track
     for (NSString *name in @[@"resume", @"toggle", @"by-name", @"random", @"radio", @"likedsongs"])
         if ([line hasPrefix:[kCommandPrefix stringByAppendingString:name]]) return YES;
     return NO;
