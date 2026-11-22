@@ -87,6 +87,24 @@
 			<key>default</key>
 			<true/>
 		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSGroupCell</string>
+			<key>footerText</key>
+			<string>Restarts a paused Spotify in the background before playback starts, which keeps the audio from stopping. Spotify on screen is never restarted.</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSSwitchCell</string>
+			<key>label</key>
+			<string>Clean Relaunch</string>
+			<key>defaults</key>
+			<string>com.goldenappleguy.zefyreborn</string>
+			<key>key</key>
+			<string>cleanRelaunch</string>
+			<key>default</key>
+			<true/>
+		</dict>
 	</array>
 </dict>
 </plist>

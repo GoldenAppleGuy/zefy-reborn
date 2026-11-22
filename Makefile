@@ -35,7 +35,6 @@ ifeq ($(THEOS_PACKAGE_SCHEME),roothide)
 	$(ECHO_NOTHING)rm -rf $(THEOS_STAGING_DIR)/DEBIAN/postinst $(THEOS_STAGING_DIR)/DEBIAN/postrm $(THEOS_STAGING_DIR)/Library/RemoteCompanion$(ECHO_END)
 else
 	$(ECHO_NOTHING)sed -i.bak -e '1s|.*|#!/bin/sh|' -e 's|/var/jb||g' $(THEOS_STAGING_DIR)/DEBIAN/postinst $(THEOS_STAGING_DIR)/DEBIAN/postrm$(ECHO_END)
-	$(ECHO_NOTHING)sed -i.bak 's|/var/jb||g' $(THEOS_STAGING_DIR)/Library/RemoteCompanion/AddOns/zefy.json$(ECHO_END)
 endif
 	$(ECHO_NOTHING)find $(THEOS_STAGING_DIR) -name '*.bak' -delete$(ECHO_END)
 endif

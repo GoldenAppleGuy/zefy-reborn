@@ -9,7 +9,7 @@ Tweak for rootless, roothide and rootful jailbreaks (iOS 14 to 17) that makes Sp
 | `spotify:<type>:<id>:play` | opens and plays |
 | `spotify:<type>:<id>?play=true` | opens and plays |
 
-`<type>` is `playlist`, `album`, `track`, `artist`, `show` or `episode`. Links without a flag behave as before.
+`<type>` is `playlist`, `album`, `track`, `artist`, `show` or `episode`. Links without a flag behave as before; given to `zefy`, they open the page.
 
 Tested on iOS 17.0 with Spotify 9.1.94 on a free account (and on older Spotify versions, listed below): playlists, albums and tracks all start. Free accounts play playlists and albums shuffled, whatever the flag says.
 
@@ -21,9 +21,10 @@ Tested on iOS 17.0 with Spotify 9.1.94 on a free account (and on older Spotify v
 zefy <link>             play a spotify: or open.spotify.com link
 zefy -n <link>          open the page without playing
 zefy -s [0|1|2]         shuffle: 0 off, 1 on (default), 2 toggle
-zefy -r [0|1|2]         repeat: 0 off, 1 track (default), 2 playlist
+zefy -r [0|1|2|3]       repeat: 0 off, 1 track (default), 2 playlist, 3 toggle (off or playlist)
 zefy --next | --prev    skip
 zefy --pause | --resume
+zefy --toggle           pause when playing, resume when paused
 zefy --seek <seconds>   move the position, negative goes back
 zefy --queue <uri>      add a track to the queue
 zefy -k [0|1|2]         like the playing track: 0 unlike, 1 like (default), 2 toggle
@@ -44,11 +45,11 @@ zefy --randomlibrary    play a random playlist from your library
 zefy --randomalbum      play a random saved album
 ```
 
-Adding to or removing from a playlist checks first and only changes what needs changing, so repeating a command is safe. The saved playlist for the `--myplaylist` options is kept in the tweak's preferences. The random picks and `--likedsongs` read the same lists Spotify shows for CarPlay (`spotify:recently-played`, `spotify:playlists`, `spotify:collection:albums`) through its content controller. Home, Daily Mixes and "made for you" are not available this way: resolving `spotify:home` fails with a Home provider error on a free account.
+Adding to or removing from a playlist checks first and only changes what needs changing, so repeating a command is safe. Spotify's add-or-remove call toggles and its check can only answer yes or no, so the tweak checks again after the change and, if the track is still on the wrong side, changes it once more: the playlist ends as asked or as it was. The saved playlist for the `--myplaylist` options is kept in the tweak's preferences. The random picks and `--likedsongs` read the same lists Spotify shows for CarPlay (`spotify:recently-played`, `spotify:playlists`, `spotify:collection:albums`) through its content controller. Home, Daily Mixes and "made for you" are not available this way: resolving `spotify:home` fails with a Home provider error on a free account.
 
 Run it as `mobile`. Nothing shows the "Open in Spotify" prompt, and a link works even when Spotify is not running. `uiopen --url` shows that prompt, and `uiopen --bundleid` drops the URL, which is why the command passes the request to the tweak through a file instead: `zefy` writes `zefyreborn.cmd` in Spotify's Documents folder; the tweak watches that folder, and checks once after launch.
 
-The controls call the same playback controller Spotify uses for CarPlay. Spotify decides what an account may do: on a free account the debug log shows a refusal for shuffle off, repeat track, seek and previous, and the call has no effect.
+The controls call the same playback controller Spotify uses for CarPlay. Each control waits for Spotify's answer and prints what happened (`Shuffle On`, `Added to Playlist`, `Already in Playlist`), or `Spotify refused <control>`. Spotify decides what an account may do: a free account refuses shuffle off, repeat track, seek and previous. A free account that is not the active Spotify device can also stop a moment after a resume; the command then prints `Spotify stopped playback`. When the answer takes longer than 7 seconds the command prints `Sent to Spotify`, and when the tweak is switched off it prints `Zefy Reborn is off`.
 
 ## Settings the Spotify app can read
 
@@ -82,7 +83,7 @@ Starting Spotify from nothing takes a few seconds. After a redirected Control Ce
 
 ## Starting playback reliably
 
-Waking a Spotify that is suspended in the background often loses the audio a moment after it starts, while a fresh launch and a foreground resume are reliable (4 of 4 each, against about half for a suspended wake). So when a request starts playback (Quick Play, a resume, a link, play by name, random, radio, Liked Songs), nothing is playing, and Spotify is still running, SpringBoard finds its process by name, closes it, and launches it clean half a second later. A resume that Spotify refuses is retried, up to three times. (A retry for "stopped right after resuming" was tried and removed: with the clean launch it was never needed, six of six trials held without it, and it fought a pause by the user. The log still notes a stop within 0.8 s of starting.) `zefy` sends its requests through SpringBoard whenever SpringBoard answers a `ping`, because a plain file cannot wake a suspended Spotify; the file is the fallback.
+Waking a Spotify that is suspended in the background often loses the audio a moment after it starts, while a fresh launch and a foreground resume are reliable (4 of 4 each, against about half for a suspended wake). So when a request starts playback (Quick Play, a resume, a link with a play flag, play by name, random, radio, Liked Songs), nothing is playing, and Spotify is still running in the background, SpringBoard finds its process by name, closes it, and launches it clean half a second later. A Spotify on screen is never closed, and the Clean Relaunch switch in Settings turns this off. A resume that Spotify refuses is retried, up to three times. (A retry for "stopped right after resuming" was tried and removed: with the clean launch it was never needed, six of six trials held without it, and it fought a pause by the user. The log still notes a stop within 0.8 s of starting.) `zefy` sends its requests through SpringBoard whenever SpringBoard answers a `ping`, because a plain file cannot wake a suspended Spotify; the file is the fallback.
 
 ## Quick Actions
 
@@ -102,9 +103,9 @@ Commands that answer (play by name, status) work through a reply file: the comma
 
 ## Quick Play
 
-A play press from Control Center (or any source that sends the MediaRemote play command) with nothing playing resumes Spotify instead of going to Apple's Music app. A paused session from another app, such as a video or a podcast, keeps its own play press. Off by default; switch it on in Settings under Zefy Reborn. An Enabled switch there turns off all of the tweak's behaviour.
+A play press from Control Center (or any source that sends the MediaRemote play command) with nothing playing resumes Spotify instead of going to Apple's Music app. A paused session from another app, such as a video or a podcast, keeps its own play press, and so does Apple's Music app when it has a song loaded. Off by default; switch it on in Settings under Zefy Reborn. An Enabled switch there turns off all of the tweak's behaviour.
 
-SpringBoard hooks `MRMediaRemoteSendCommandToPlayerWithResult` (command 0 play, 2 toggle). If nothing is playing and no app, or Apple's Music app, is the now-playing app, it drops the command, writes `zefyreborn:resume` to the same command file `zefy` uses, and launches Spotify in the background with FBSSystemService. Spotify finds its playback controller and calls `resumeWithCompletionHandler:`. The press can arrive on any thread, so the media state is read on the main thread with a 0.3 s timeout; if it does not answer, the press passes through.
+SpringBoard hooks `MRMediaRemoteSendCommandToPlayerWithResult` (command 0 play, 2 toggle). If nothing is playing and no app is the now-playing app, or Apple's Music app is with nothing loaded (`SBMediaController hasTrack`), it drops the command, writes `zefyreborn:resume` to the same command file `zefy` uses, and launches Spotify in the background with FBSSystemService. Spotify finds its playback controller and calls `resumeWithCompletionHandler:`. The press can arrive on any thread, so the media state is read on the main thread with a 0.3 s timeout; if it does not answer, the press passes through.
 
 ## How it works
 

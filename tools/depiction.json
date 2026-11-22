@@ -46,6 +46,15 @@
       "views": [
         {
           "class": "DepictionSubheaderView",
+          "title": "1.0.2",
+          "useBoldText": true
+        },
+        {
+          "class": "DepictionMarkdownView",
+          "markdown": "- Fixed a Spotify crash in the search for Spotify's controllers.\n- Commands answer with what happened, or say that Spotify refused them.\n- Spotify on screen is never closed before playback, links without a play flag open their page, and a new Clean Relaunch setting turns the restart off.\n- Quick Play leaves Apple's Music app alone when it has a song loaded.\n- Playlist adds and removes are checked afterwards, and links are checked before use.\n- `zefy --toggle` and `zefy -r 3` toggle playback and repeat.\n- RemoteCompanion add-on (RemoteCompanion 4.5): clearer actions, result banners, a Quick Play Started trigger and the tweak's settings."
+        },
+        {
+          "class": "DepictionSubheaderView",
           "title": "1.0.1",
           "useBoldText": true
         },

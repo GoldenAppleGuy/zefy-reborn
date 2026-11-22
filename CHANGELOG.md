@@ -2,6 +2,16 @@
 
 Private build. Versions are listed newest first.
 
+## 1.0.2
+- Spotify on screen is never closed before playback starts, and a link without a play flag no longer restarts Spotify; given to `zefy`, it opens the page. A new Clean Relaunch setting turns the restart off. (Thanks to saihgupr.)
+- Quick Play leaves Apple's Music app alone when it has a song loaded, so a paused Music session plays as usual. (Reported by saihgupr.)
+- Commands check that a link is a Spotify link of the right kind before passing it on, so a typo can't crash Spotify or save a track to Liked Songs.
+- Fixed a Spotify crash: the search for Spotify's controllers could read memory that another thread had just freed. It now leaves large blocks alone and holds the allocator's lock while it reads, and each controller is looked up once instead of on every command.
+- Controls answer with what happened, such as `Shuffle On` or `Already in Playlist`, or say that Spotify refused them. A resume that Spotify stops right away is reported as stopped.
+- Adding to or removing from a playlist is checked afterwards, so a wrong first check can no longer leave a track removed by an add.
+- `zefy --toggle` pauses or resumes, and `zefy -r 3` turns repeat off or back on for the playlist.
+- RemoteCompanion add-on: clearer names and choices, grouped in order, banners that show the result, a sleep timer with any number of minutes, a Quick Play Started trigger, and the tweak's settings on the add-on's page. Choosing Toggle for Enabled or Quick Play no longer switches the setting off.
+
 ## 1.0.1
 - Quick Play no longer takes over the play press of a paused session from another app, such as a video or a podcast. It only starts Spotify when nothing, or Apple's Music app, owns the media session.
 - Resume works on iOS 14: the tweak uses the media function iOS 14 has, keeps Spotify running long enough after a background launch to read the waiting command, and sends a resume again when Spotify drops it.

@@ -2,67 +2,139 @@
   "api": 1,
   "id": "zefy",
   "name": "Zefy Reborn",
-  "icon": "music.note.list",
+  "icon": "zefy.png",
   "requires": [
-    "/var/jb/usr/bin/zefy"
+    "{jbroot}/usr/bin/zefy"
   ],
   "actions": [
     {
-      "command": "play",
-      "name": "Play",
-      "icon": "play.circle.fill",
-      "input": {
-        "title": "Link",
-        "placeholder": "spotify:playlist:..."
-      },
+      "command": "playback",
+      "name": "Playback",
+      "icon": "playpause.fill",
+      "options": [
+        {
+          "id": "mode",
+          "title": "State",
+          "choices": [
+            {
+              "word": "toggle",
+              "label": "Toggle",
+              "value": "--toggle"
+            },
+            {
+              "word": "pause",
+              "label": "Pause",
+              "value": "--pause"
+            },
+            {
+              "word": "resume",
+              "label": "Resume",
+              "value": "--resume"
+            }
+          ]
+        }
+      ],
       "run": [
         {
           "exec": [
-            "/var/jb/bin/sh",
-            "/var/jb/usr/bin/zefy",
-            "--resume"
+            "{jbroot}/bin/sh",
+            "{jbroot}/usr/bin/zefy",
+            "--toggle"
           ],
+          "as": "result",
           "if": {
-            "var": "input",
+            "var": "mode",
             "unset": true
           }
         },
         {
           "exec": [
-            "/var/jb/bin/sh",
-            "/var/jb/usr/bin/zefy",
-            "{input}"
-          ]
+            "{jbroot}/bin/sh",
+            "{jbroot}/usr/bin/zefy",
+            "{mode}"
+          ],
+          "as": "result"
         }
       ],
       "banner": {
         "title": "Spotify",
-        "icon": "play.circle.fill",
-        "subtitle": "Play"
+        "subtitle": "{result}",
+        "icon": "playpause.fill"
       }
     },
     {
-      "command": "open",
-      "name": "Open Page",
-      "icon": "arrow.up.forward.app",
+      "command": "skip",
+      "name": "Skip",
+      "icon": "forward.end.fill",
+      "options": [
+        {
+          "id": "direction",
+          "title": "Direction",
+          "choices": [
+            {
+              "word": "next",
+              "label": "Next",
+              "value": "--next"
+            },
+            {
+              "word": "previous",
+              "label": "Previous",
+              "value": "--prev"
+            }
+          ]
+        }
+      ],
+      "run": [
+        {
+          "exec": [
+            "{jbroot}/bin/sh",
+            "{jbroot}/usr/bin/zefy",
+            "--next"
+          ],
+          "as": "result",
+          "if": {
+            "var": "direction",
+            "unset": true
+          }
+        },
+        {
+          "exec": [
+            "{jbroot}/bin/sh",
+            "{jbroot}/usr/bin/zefy",
+            "{direction}"
+          ],
+          "as": "result"
+        }
+      ],
+      "banner": {
+        "title": "Spotify",
+        "subtitle": "{result}",
+        "icon": "forward.end.fill"
+      }
+    },
+    {
+      "command": "seek",
+      "name": "Seek",
+      "icon": "goforward",
       "input": {
-        "title": "Link",
-        "placeholder": "spotify:album:..."
+        "title": "Move By (s)",
+        "placeholder": "15 or -15"
       },
       "run": [
         {
           "exec": [
-            "/var/jb/bin/sh",
-            "/var/jb/usr/bin/zefy",
-            "-n",
+            "{jbroot}/bin/sh",
+            "{jbroot}/usr/bin/zefy",
+            "--seek",
             "{input}"
-          ]
+          ],
+          "as": "result"
         }
       ],
       "banner": {
         "title": "Spotify",
-        "icon": "arrow.up.forward.app",
-        "subtitle": "Open Page"
+        "subtitle": "{result}",
+        "icon": "goforward"
       }
     },
     {
@@ -95,11 +167,12 @@
       "run": [
         {
           "exec": [
-            "/var/jb/bin/sh",
-            "/var/jb/usr/bin/zefy",
+            "{jbroot}/bin/sh",
+            "{jbroot}/usr/bin/zefy",
             "-s",
             "2"
           ],
+          "as": "result",
           "if": {
             "var": "mode",
             "unset": true
@@ -107,17 +180,18 @@
         },
         {
           "exec": [
-            "/var/jb/bin/sh",
-            "/var/jb/usr/bin/zefy",
+            "{jbroot}/bin/sh",
+            "{jbroot}/usr/bin/zefy",
             "-s",
             "{mode}"
-          ]
+          ],
+          "as": "result"
         }
       ],
       "banner": {
         "title": "Spotify",
-        "icon": "shuffle",
-        "subtitle": "Shuffle"
+        "subtitle": "{result}",
+        "icon": "shuffle"
       }
     },
     {
@@ -130,6 +204,11 @@
           "title": "Mode",
           "choices": [
             {
+              "word": "toggle",
+              "label": "Toggle",
+              "value": "3"
+            },
+            {
               "word": "off",
               "label": "Off",
               "value": "0"
@@ -141,7 +220,7 @@
             },
             {
               "word": "playlist",
-              "label": "Playlist",
+              "label": "Playlist or Album",
               "value": "2"
             }
           ]
@@ -150,11 +229,12 @@
       "run": [
         {
           "exec": [
-            "/var/jb/bin/sh",
-            "/var/jb/usr/bin/zefy",
+            "{jbroot}/bin/sh",
+            "{jbroot}/usr/bin/zefy",
             "-r",
-            "2"
+            "3"
           ],
+          "as": "result",
           "if": {
             "var": "mode",
             "unset": true
@@ -162,119 +242,24 @@
         },
         {
           "exec": [
-            "/var/jb/bin/sh",
-            "/var/jb/usr/bin/zefy",
+            "{jbroot}/bin/sh",
+            "{jbroot}/usr/bin/zefy",
             "-r",
             "{mode}"
-          ]
-        }
-      ],
-      "banner": {
-        "title": "Spotify",
-        "icon": "repeat",
-        "subtitle": "Repeat"
-      }
-    },
-    {
-      "command": "skip",
-      "name": "Skip",
-      "icon": "forward.end.fill",
-      "options": [
-        {
-          "id": "direction",
-          "title": "Direction",
-          "choices": [
-            {
-              "word": "next",
-              "label": "Next",
-              "value": "--next"
-            },
-            {
-              "word": "previous",
-              "label": "Previous",
-              "value": "--prev"
-            }
-          ]
-        }
-      ],
-      "run": [
-        {
-          "exec": [
-            "/var/jb/bin/sh",
-            "/var/jb/usr/bin/zefy",
-            "--next"
           ],
-          "if": {
-            "var": "direction",
-            "unset": true
-          }
-        },
-        {
-          "exec": [
-            "/var/jb/bin/sh",
-            "/var/jb/usr/bin/zefy",
-            "{direction}"
-          ]
+          "as": "result"
         }
       ],
       "banner": {
         "title": "Spotify",
-        "icon": "forward.end.fill",
-        "subtitle": "Skip"
-      }
-    },
-    {
-      "command": "playback",
-      "name": "Pause or Resume",
-      "icon": "playpause.fill",
-      "options": [
-        {
-          "id": "mode",
-          "title": "State",
-          "choices": [
-            {
-              "word": "pause",
-              "label": "Pause",
-              "value": "--pause"
-            },
-            {
-              "word": "resume",
-              "label": "Resume",
-              "value": "--resume"
-            }
-          ]
-        }
-      ],
-      "run": [
-        {
-          "exec": [
-            "/var/jb/bin/sh",
-            "/var/jb/usr/bin/zefy",
-            "--resume"
-          ],
-          "if": {
-            "var": "mode",
-            "unset": true
-          }
-        },
-        {
-          "exec": [
-            "/var/jb/bin/sh",
-            "/var/jb/usr/bin/zefy",
-            "{mode}"
-          ]
-        }
-      ],
-      "banner": {
-        "title": "Spotify",
-        "icon": "playpause.fill",
-        "subtitle": "Playback"
+        "subtitle": "{result}",
+        "icon": "repeat"
       }
     },
     {
       "command": "queue",
       "name": "Add to Queue",
-      "icon": "text.badge.plus",
+      "icon": "text.append",
       "input": {
         "title": "Track",
         "placeholder": "spotify:track:..."
@@ -282,216 +267,23 @@
       "run": [
         {
           "exec": [
-            "/var/jb/bin/sh",
-            "/var/jb/usr/bin/zefy",
+            "{jbroot}/bin/sh",
+            "{jbroot}/usr/bin/zefy",
             "--queue",
             "{input}"
-          ]
+          ],
+          "as": "result"
         }
       ],
       "banner": {
         "title": "Spotify",
-        "icon": "text.badge.plus",
-        "subtitle": "Add to Queue"
-      }
-    },
-    {
-      "command": "seek",
-      "name": "Seek",
-      "icon": "goforward.15",
-      "input": {
-        "title": "Seconds",
-        "placeholder": "15",
-        "number": true
-      },
-      "run": [
-        {
-          "exec": [
-            "/var/jb/bin/sh",
-            "/var/jb/usr/bin/zefy",
-            "--seek",
-            "{input}"
-          ]
-        }
-      ],
-      "banner": {
-        "title": "Spotify",
-        "icon": "goforward.15",
-        "subtitle": "Seek"
-      }
-    },
-    {
-      "command": "quickplay",
-      "name": "Quick Play",
-      "icon": "bolt.circle.fill",
-      "options": [
-        {
-          "id": "mode",
-          "title": "Mode",
-          "choices": [
-            {
-              "word": "toggle",
-              "label": "Toggle"
-            },
-            {
-              "word": "on",
-              "label": "On",
-              "value": "true"
-            },
-            {
-              "word": "off",
-              "label": "Off",
-              "value": "false"
-            }
-          ]
-        }
-      ],
-      "run": [
-        {
-          "defaults": {
-            "domain": "com.goldenappleguy.zefyreborn",
-            "key": "quickPlay",
-            "toggle": true,
-            "as": "state",
-            "labels": {
-              "true": "On",
-              "false": "Off"
-            }
-          },
-          "if": {
-            "var": "mode",
-            "unset": true
-          }
-        },
-        {
-          "defaults": {
-            "domain": "com.goldenappleguy.zefyreborn",
-            "key": "quickPlay",
-            "toggle": true,
-            "as": "state",
-            "labels": {
-              "true": "On",
-              "false": "Off"
-            }
-          },
-          "if": {
-            "var": "mode",
-            "is": "Toggle"
-          }
-        },
-        {
-          "defaults": {
-            "domain": "com.goldenappleguy.zefyreborn",
-            "key": "quickPlay",
-            "value": "{mode}",
-            "type": "bool",
-            "as": "state",
-            "labels": {
-              "true": "On",
-              "false": "Off"
-            }
-          },
-          "if": {
-            "var": "mode",
-            "isNot": "Toggle"
-          }
-        }
-      ],
-      "banner": {
-        "title": "Quick Play",
-        "icon": "bolt.circle.fill",
-        "subtitle": "{state}"
-      }
-    },
-    {
-      "command": "enabled",
-      "name": "Zefy Reborn",
-      "icon": "power.circle.fill",
-      "options": [
-        {
-          "id": "mode",
-          "title": "Mode",
-          "choices": [
-            {
-              "word": "toggle",
-              "label": "Toggle"
-            },
-            {
-              "word": "on",
-              "label": "On",
-              "value": "true"
-            },
-            {
-              "word": "off",
-              "label": "Off",
-              "value": "false"
-            }
-          ]
-        }
-      ],
-      "run": [
-        {
-          "defaults": {
-            "domain": "com.goldenappleguy.zefyreborn",
-            "key": "enabled",
-            "toggle": true,
-            "as": "state",
-            "labels": {
-              "true": "On",
-              "false": "Off"
-            }
-          },
-          "if": {
-            "var": "mode",
-            "unset": true
-          }
-        },
-        {
-          "defaults": {
-            "domain": "com.goldenappleguy.zefyreborn",
-            "key": "enabled",
-            "toggle": true,
-            "as": "state",
-            "labels": {
-              "true": "On",
-              "false": "Off"
-            }
-          },
-          "if": {
-            "var": "mode",
-            "is": "Toggle"
-          }
-        },
-        {
-          "defaults": {
-            "domain": "com.goldenappleguy.zefyreborn",
-            "key": "enabled",
-            "value": "{mode}",
-            "type": "bool",
-            "as": "state",
-            "labels": {
-              "true": "On",
-              "false": "Off"
-            }
-          },
-          "if": {
-            "var": "mode",
-            "isNot": "Toggle"
-          }
-        },
-        {
-          "notify": "com.goldenappleguy.zefyreborn.prefschanged"
-        }
-      ],
-      "banner": {
-        "title": "Zefy Reborn",
-        "icon": "power.circle.fill",
-        "subtitle": "{state}"
+        "subtitle": "{result}",
+        "icon": "text.append"
       }
     },
     {
       "command": "like",
-      "name": "Like",
+      "name": "Like Track",
       "icon": "heart.fill",
       "options": [
         {
@@ -519,11 +311,12 @@
       "run": [
         {
           "exec": [
-            "/var/jb/bin/sh",
-            "/var/jb/usr/bin/zefy",
+            "{jbroot}/bin/sh",
+            "{jbroot}/usr/bin/zefy",
             "-k",
             "2"
           ],
+          "as": "result",
           "if": {
             "var": "mode",
             "unset": true
@@ -531,22 +324,23 @@
         },
         {
           "exec": [
-            "/var/jb/bin/sh",
-            "/var/jb/usr/bin/zefy",
+            "{jbroot}/bin/sh",
+            "{jbroot}/usr/bin/zefy",
             "-k",
             "{mode}"
-          ]
+          ],
+          "as": "result"
         }
       ],
       "banner": {
         "title": "Spotify",
-        "icon": "heart.fill",
-        "subtitle": "Like"
+        "subtitle": "{result}",
+        "icon": "heart.fill"
       }
     },
     {
       "command": "playlist add",
-      "name": "Add to Playlist",
+      "name": "Add Track to Playlist",
       "icon": "text.badge.plus",
       "input": {
         "title": "Playlist",
@@ -555,76 +349,23 @@
       "run": [
         {
           "exec": [
-            "/var/jb/bin/sh",
-            "/var/jb/usr/bin/zefy",
+            "{jbroot}/bin/sh",
+            "{jbroot}/usr/bin/zefy",
             "-a",
             "{input}"
-          ]
-        }
-      ],
-      "banner": {
-        "title": "Spotify",
-        "icon": "text.badge.plus",
-        "subtitle": "Add to Playlist"
-      }
-    },
-    {
-      "command": "radio",
-      "name": "Radio",
-      "icon": "dot.radiowaves.left.and.right",
-      "input": {
-        "title": "Source",
-        "placeholder": "Playing track"
-      },
-      "run": [
-        {
-          "exec": [
-            "/var/jb/bin/sh",
-            "/var/jb/usr/bin/zefy",
-            "--radio"
           ],
-          "if": {
-            "var": "input",
-            "unset": true
-          }
-        },
-        {
-          "exec": [
-            "/var/jb/bin/sh",
-            "/var/jb/usr/bin/zefy",
-            "--radio",
-            "{input}"
-          ]
+          "as": "result"
         }
       ],
       "banner": {
         "title": "Spotify",
-        "icon": "dot.radiowaves.left.and.right",
-        "subtitle": "Radio"
-      }
-    },
-    {
-      "command": "liked songs",
-      "name": "Liked Songs",
-      "icon": "heart.text.square",
-      "run": [
-        {
-          "exec": [
-            "/var/jb/bin/sh",
-            "/var/jb/usr/bin/zefy",
-            "--likedsongs"
-          ]
-        }
-      ],
-      "banner": {
-        "title": "Spotify",
-        "icon": "heart.text.square",
-        "subtitle": "Liked Songs"
+        "subtitle": "{result}",
+        "icon": "text.badge.plus"
       }
     },
     {
       "command": "playlist remove",
-      "name": "Remove from Playlist",
+      "name": "Remove Track from Playlist",
       "icon": "text.badge.minus",
       "input": {
         "title": "Playlist",
@@ -633,17 +374,18 @@
       "run": [
         {
           "exec": [
-            "/var/jb/bin/sh",
-            "/var/jb/usr/bin/zefy",
+            "{jbroot}/bin/sh",
+            "{jbroot}/usr/bin/zefy",
             "-d",
             "{input}"
-          ]
+          ],
+          "as": "result"
         }
       ],
       "banner": {
         "title": "Spotify",
-        "icon": "text.badge.minus",
-        "subtitle": "Remove from Playlist"
+        "subtitle": "{result}",
+        "icon": "text.badge.minus"
       }
     },
     {
@@ -662,12 +404,12 @@
             },
             {
               "word": "add",
-              "label": "Add Track",
+              "label": "Add Playing Track",
               "value": "--addtomyplaylist"
             },
             {
               "word": "remove",
-              "label": "Remove Track",
+              "label": "Remove Playing Track",
               "value": "--removefrommyplaylist"
             }
           ]
@@ -676,10 +418,11 @@
       "run": [
         {
           "exec": [
-            "/var/jb/bin/sh",
-            "/var/jb/usr/bin/zefy",
+            "{jbroot}/bin/sh",
+            "{jbroot}/usr/bin/zefy",
             "--myplaylist"
           ],
+          "as": "result",
           "if": {
             "var": "mode",
             "unset": true
@@ -687,46 +430,133 @@
         },
         {
           "exec": [
-            "/var/jb/bin/sh",
-            "/var/jb/usr/bin/zefy",
+            "{jbroot}/bin/sh",
+            "{jbroot}/usr/bin/zefy",
             "{mode}"
-          ]
+          ],
+          "as": "result"
         }
       ],
       "banner": {
         "title": "Spotify",
-        "icon": "music.note.list",
-        "subtitle": "My Playlist"
+        "subtitle": "{result}",
+        "icon": "music.note.list"
       }
     },
     {
-      "command": "myplaylist set",
-      "name": "Set My Playlist",
-      "icon": "gearshape",
+      "command": "play",
+      "name": "Play Link",
+      "icon": "play.circle.fill",
       "input": {
-        "title": "Playlist",
+        "title": "Link",
         "placeholder": "spotify:playlist:..."
       },
       "run": [
         {
           "exec": [
-            "/var/jb/bin/sh",
-            "/var/jb/usr/bin/zefy",
-            "--setmyplaylist",
+            "{jbroot}/bin/sh",
+            "{jbroot}/usr/bin/zefy",
             "{input}"
-          ]
+          ],
+          "as": "result"
         }
       ],
       "banner": {
         "title": "Spotify",
-        "icon": "gearshape",
-        "subtitle": "My Playlist Saved"
+        "subtitle": "{result}",
+        "icon": "play.circle.fill"
+      }
+    },
+    {
+      "command": "name",
+      "name": "Play by Name",
+      "icon": "magnifyingglass",
+      "options": [
+        {
+          "id": "kind",
+          "title": "Search In",
+          "choices": [
+            {
+              "word": "any",
+              "label": "Anything",
+              "value": "--find"
+            },
+            {
+              "word": "playlist",
+              "label": "Playlists",
+              "value": "--playlist"
+            },
+            {
+              "word": "album",
+              "label": "Albums",
+              "value": "--album"
+            },
+            {
+              "word": "artist",
+              "label": "Artists",
+              "value": "--artist"
+            }
+          ]
+        }
+      ],
+      "input": {
+        "title": "Name",
+        "placeholder": "Playlist name"
+      },
+      "run": [
+        {
+          "exec": [
+            "{jbroot}/bin/sh",
+            "{jbroot}/usr/bin/zefy",
+            "--find",
+            "{input}"
+          ],
+          "as": "result",
+          "if": {
+            "var": "kind",
+            "unset": true
+          }
+        },
+        {
+          "exec": [
+            "{jbroot}/bin/sh",
+            "{jbroot}/usr/bin/zefy",
+            "{kind}",
+            "{input}"
+          ],
+          "as": "result"
+        }
+      ],
+      "banner": {
+        "title": "Spotify",
+        "subtitle": "{result}",
+        "icon": "magnifyingglass"
+      }
+    },
+    {
+      "command": "liked songs",
+      "name": "Play Liked Songs",
+      "icon": "heart.text.square",
+      "run": [
+        {
+          "exec": [
+            "{jbroot}/bin/sh",
+            "{jbroot}/usr/bin/zefy",
+            "--likedsongs"
+          ],
+          "as": "result"
+        }
+      ],
+      "banner": {
+        "title": "Spotify",
+        "subtitle": "{result}",
+        "icon": "heart.text.square"
       }
     },
     {
       "command": "random",
       "name": "Random Pick",
-      "icon": "dice",
+      "icon": "sparkles",
       "options": [
         {
           "id": "source",
@@ -753,10 +583,11 @@
       "run": [
         {
           "exec": [
-            "/var/jb/bin/sh",
-            "/var/jb/usr/bin/zefy",
+            "{jbroot}/bin/sh",
+            "{jbroot}/usr/bin/zefy",
             "--randomrecent"
           ],
+          "as": "result",
           "if": {
             "var": "source",
             "unset": true
@@ -764,82 +595,79 @@
         },
         {
           "exec": [
-            "/var/jb/bin/sh",
-            "/var/jb/usr/bin/zefy",
+            "{jbroot}/bin/sh",
+            "{jbroot}/usr/bin/zefy",
             "{source}"
-          ]
+          ],
+          "as": "result"
         }
       ],
       "banner": {
         "title": "Spotify",
-        "icon": "dice",
-        "subtitle": "Random Pick"
+        "subtitle": "{result}",
+        "icon": "sparkles"
       }
     },
     {
-      "command": "name",
-      "name": "Play by Name",
-      "icon": "magnifyingglass",
-      "options": [
-        {
-          "id": "kind",
-          "title": "Kind",
-          "choices": [
-            {
-              "word": "any",
-              "label": "Anything",
-              "value": "--find"
-            },
-            {
-              "word": "playlist",
-              "label": "Playlist",
-              "value": "--playlist"
-            },
-            {
-              "word": "album",
-              "label": "Album",
-              "value": "--album"
-            },
-            {
-              "word": "artist",
-              "label": "Artist",
-              "value": "--artist"
-            }
-          ]
-        }
-      ],
+      "command": "radio",
+      "name": "Radio",
+      "icon": "dot.radiowaves.left.and.right",
       "input": {
-        "title": "Name",
-        "placeholder": "Moosic"
+        "title": "Source",
+        "placeholder": "Playing track"
       },
       "run": [
         {
           "exec": [
-            "/var/jb/bin/sh",
-            "/var/jb/usr/bin/zefy",
-            "{kind}",
-            "{input}"
-          ],
-          "as": "result"
-        },
-        {
-          "exec": [
-            "/var/jb/bin/sh",
-            "/var/jb/usr/bin/zefy",
-            "--find",
-            "{input}"
+            "{jbroot}/bin/sh",
+            "{jbroot}/usr/bin/zefy",
+            "--radio"
           ],
           "as": "result",
           "if": {
-            "var": "kind",
+            "var": "input",
             "unset": true
           }
+        },
+        {
+          "exec": [
+            "{jbroot}/bin/sh",
+            "{jbroot}/usr/bin/zefy",
+            "--radio",
+            "{input}"
+          ],
+          "as": "result"
         }
       ],
       "banner": {
         "title": "Spotify",
-        "icon": "magnifyingglass",
-        "subtitle": "{result}"
+        "subtitle": "{result}",
+        "icon": "dot.radiowaves.left.and.right"
+      }
+    },
+    {
+      "command": "open",
+      "name": "Open Link",
+      "icon": "arrow.up.forward.app",
+      "input": {
+        "title": "Link",
+        "placeholder": "spotify:album:..."
+      },
+      "run": [
+        {
+          "exec": [
+            "{jbroot}/bin/sh",
+            "{jbroot}/usr/bin/zefy",
+            "-n",
+            "{input}"
+          ],
+          "as": "result"
+        }
+      ],
+      "banner": {
+        "title": "Spotify",
+        "subtitle": "{result}",
+        "icon": "arrow.up.forward.app"
       }
     },
     {
@@ -849,17 +677,17 @@
       "run": [
         {
           "exec": [
-            "/var/jb/bin/sh",
-            "/var/jb/usr/bin/zefy",
+            "{jbroot}/bin/sh",
+            "{jbroot}/usr/bin/zefy",
             "--status"
           ],
-          "as": "track"
+          "as": "result"
         }
       ],
       "banner": {
-        "title": "Now Playing",
-        "icon": "music.note",
-        "subtitle": "{track}"
+        "title": "Spotify",
+        "subtitle": "{result}",
+        "icon": "music.note"
       }
     },
     {
@@ -909,41 +737,205 @@
           ]
         }
       ],
+      "input": {
+        "title": "Minutes",
+        "placeholder": "20",
+        "number": true
+      },
       "run": [
         {
           "exec": [
-            "/var/jb/bin/sh",
-            "/var/jb/usr/bin/zefy",
+            "{jbroot}/bin/sh",
+            "{jbroot}/usr/bin/zefy",
+            "--sleep",
+            "{time}"
+          ],
+          "as": "result"
+        },
+        {
+          "exec": [
+            "{jbroot}/bin/sh",
+            "{jbroot}/usr/bin/zefy",
+            "--sleep",
+            "{input}"
+          ],
+          "as": "result"
+        },
+        {
+          "exec": [
+            "{jbroot}/bin/sh",
+            "{jbroot}/usr/bin/zefy",
             "--sleep",
             "status"
           ],
-          "as": "left",
+          "as": "result",
           "if": {
-            "var": "time",
+            "var": "result",
+            "unset": true
+          }
+        }
+      ],
+      "banner": {
+        "title": "Spotify",
+        "subtitle": "{result}",
+        "icon": "moon.zzz.fill"
+      }
+    },
+    {
+      "command": "enabled",
+      "name": "Enabled",
+      "icon": "power",
+      "options": [
+        {
+          "id": "mode",
+          "title": "Mode",
+          "choices": [
+            {
+              "word": "toggle",
+              "label": "Toggle",
+              "value": "toggle"
+            },
+            {
+              "word": "on",
+              "label": "On",
+              "value": "true"
+            },
+            {
+              "word": "off",
+              "label": "Off",
+              "value": "false"
+            }
+          ]
+        }
+      ],
+      "run": [
+        {
+          "defaults": {
+            "domain": "com.goldenappleguy.zefyreborn",
+            "key": "enabled",
+            "toggle": true,
+            "as": "state"
+          },
+          "if": {
+            "var": "mode",
             "unset": true
           }
         },
         {
-          "exec": [
-            "/var/jb/bin/sh",
-            "/var/jb/usr/bin/zefy",
-            "--sleep",
-            "{time}"
-          ],
-          "as": "left"
+          "defaults": {
+            "domain": "com.goldenappleguy.zefyreborn",
+            "key": "enabled",
+            "toggle": true,
+            "as": "state"
+          },
+          "if": {
+            "var": "mode",
+            "is": "toggle"
+          }
+        },
+        {
+          "defaults": {
+            "domain": "com.goldenappleguy.zefyreborn",
+            "key": "enabled",
+            "value": "{mode}",
+            "type": "bool",
+            "as": "state"
+          },
+          "if": {
+            "var": "mode",
+            "isNot": "toggle"
+          }
+        },
+        {
+          "notify": "com.goldenappleguy.zefyreborn.prefschanged"
         }
       ],
       "banner": {
-        "title": "Sleep Timer",
-        "icon": "moon.zzz.fill",
-        "subtitle": "{left}"
+        "title": "Spotify",
+        "subtitle": "Zefy Reborn {state}",
+        "icon": "power"
+      }
+    },
+    {
+      "command": "quickplay",
+      "name": "Quick Play",
+      "icon": "bolt.circle.fill",
+      "options": [
+        {
+          "id": "mode",
+          "title": "Mode",
+          "choices": [
+            {
+              "word": "toggle",
+              "label": "Toggle",
+              "value": "toggle"
+            },
+            {
+              "word": "on",
+              "label": "On",
+              "value": "true"
+            },
+            {
+              "word": "off",
+              "label": "Off",
+              "value": "false"
+            }
+          ]
+        }
+      ],
+      "run": [
+        {
+          "defaults": {
+            "domain": "com.goldenappleguy.zefyreborn",
+            "key": "quickPlay",
+            "toggle": true,
+            "as": "state"
+          },
+          "if": {
+            "var": "mode",
+            "unset": true
+          }
+        },
+        {
+          "defaults": {
+            "domain": "com.goldenappleguy.zefyreborn",
+            "key": "quickPlay",
+            "toggle": true,
+            "as": "state"
+          },
+          "if": {
+            "var": "mode",
+            "is": "toggle"
+          }
+        },
+        {
+          "defaults": {
+            "domain": "com.goldenappleguy.zefyreborn",
+            "key": "quickPlay",
+            "value": "{mode}",
+            "type": "bool",
+            "as": "state"
+          },
+          "if": {
+            "var": "mode",
+            "isNot": "toggle"
+          }
+        },
+        {
+          "notify": "com.goldenappleguy.zefyreborn.prefschanged"
+        }
+      ],
+      "banner": {
+        "title": "Spotify",
+        "subtitle": "Quick Play {state}",
+        "icon": "bolt.circle.fill"
       }
     }
   ],
   "conditions": [
     {
       "id": "playing",
-      "name": "Spotify Playing",
+      "name": "Spotify Playback",
       "type": "choice",
       "notifyState": "com.goldenappleguy.zefyreborn.playstate",
       "choices": {
@@ -957,7 +949,7 @@
       "notify": "com.goldenappleguy.zefyreborn.trackchanged",
       "trigger": {
         "id": "track",
-        "name": "Spotify Track Changed",
+        "name": "Track Changed",
         "icon": "music.note",
         "states": false
       }
@@ -969,7 +961,7 @@
         "name": "Spotify Playback",
         "icon": "playpause.fill",
         "states": {
-          "1": "Started",
+          "1": "Playing",
           "0": "Paused"
         }
       }
@@ -978,10 +970,75 @@
       "notify": "com.goldenappleguy.zefyreborn.starting",
       "banner": {
         "title": "Spotify",
-        "subtitle": "Starting Spotify",
-        "icon": "play.circle.fill",
+        "subtitle": "Starting",
+        "icon": "bolt.circle.fill",
         "hold": 3
+      },
+      "trigger": {
+        "id": "quickplay",
+        "name": "Quick Play Started",
+        "icon": "bolt.circle.fill",
+        "states": false
       }
+    }
+  ],
+  "settings": [
+    {
+      "id": "enabled",
+      "title": "Enabled",
+      "type": "switch",
+      "domain": "com.goldenappleguy.zefyreborn",
+      "key": "enabled",
+      "default": true,
+      "notify": "com.goldenappleguy.zefyreborn.prefschanged"
+    },
+    {
+      "id": "quickplay",
+      "title": "Quick Play",
+      "type": "switch",
+      "domain": "com.goldenappleguy.zefyreborn",
+      "key": "quickPlay",
+      "default": false,
+      "notify": "com.goldenappleguy.zefyreborn.prefschanged",
+      "note": "Play presses start Spotify when no other app is playing"
+    },
+    {
+      "id": "quickactions",
+      "title": "Quick Actions",
+      "type": "switch",
+      "domain": "com.goldenappleguy.zefyreborn",
+      "key": "quickActions",
+      "default": true,
+      "notify": "com.goldenappleguy.zefyreborn.prefschanged",
+      "note": "Extra items in the Spotify icon menu"
+    },
+    {
+      "id": "ccrecents",
+      "title": "Control Center Recents",
+      "type": "switch",
+      "domain": "com.goldenappleguy.zefyreborn",
+      "key": "ccRecents",
+      "default": true,
+      "notify": "com.goldenappleguy.zefyreborn.prefschanged",
+      "note": "Recently played items in the media module"
+    },
+    {
+      "id": "cleanrelaunch",
+      "title": "Clean Relaunch",
+      "type": "switch",
+      "domain": "com.goldenappleguy.zefyreborn",
+      "key": "cleanRelaunch",
+      "default": true,
+      "notify": "com.goldenappleguy.zefyreborn.prefschanged",
+      "note": "Restarts a paused Spotify in the background before playback"
+    },
+    {
+      "id": "myplaylist",
+      "title": "My Playlist",
+      "type": "text",
+      "domain": "com.goldenappleguy.zefyreborn",
+      "key": "myPlaylist",
+      "note": "Playlist link for the My Playlist action"
     }
   ]
 }

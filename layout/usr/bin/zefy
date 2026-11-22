@@ -11,11 +11,12 @@ Usage: zefy [option] [value]
   <link>           play a spotify: or open.spotify.com link
   -n <link>        open the page without playing
   -s [0|1|2]       shuffle: 0 off, 1 on (default), 2 toggle
-  -r [0|1|2]       repeat: 0 off, 1 track (default), 2 playlist
+  -r [0|1|2|3]     repeat: 0 off, 1 track (default), 2 playlist, 3 toggle (off or playlist)
   --next           skip to the next track
   --prev           skip to the previous track
   --pause          pause
   --resume         resume
+  --toggle         pause when playing, resume when paused
   --seek <sec>     move the position by seconds, negative goes back
   --queue <uri>    add a track to the queue (spotify:track:<id>)
   -k [0|1|2]       like the playing track: 0 unlike, 1 like (default), 2 toggle
@@ -38,7 +39,7 @@ Usage: zefy [option] [value]
   --randomlibrary  play a random playlist from your library
   --randomalbum    play a random saved album
   -h               show this help
-Spotify decides which controls an account may use.
+Controls print what happened, or that Spotify refused them; Spotify decides what an account may use.
 U
 }
 
@@ -50,9 +51,16 @@ mine() {
 fail() { echo "zefy: $*" >&2; exit 2; }
 num() { case "$1" in ''|*[!0-9.-]*) fail "'$1' is not a number" ;; esac; }
 mode() { case "$1" in 0|1|2) ;; *) fail "'$1' must be 0, 1 or 2" ;; esac; }
+mode3() { case "$1" in 0|1|2|3) ;; *) fail "'$1' must be 0, 1, 2 or 3" ;; esac; }
+
+# RemoteCompanion stops a program after 10 s, so every wait below ends by this deadline (clock time, so slow
+# loops on old phones can't stretch it).
+deadline=$(( $(date +%s) + 8 ))
+secs_left() { echo $(( deadline - $(date +%s) )); }
 
 foreground=0
-wait_result=0
+wait_result=0   # 1: wait for Spotify's answer and print it, 2: status
+quiet=0         # 1: a control; no answer in time still means the request was sent
 case "$1" in
     --sleep)
         [ $# -eq 2 ] || fail "--sleep needs minutes, off or status"
@@ -73,16 +81,17 @@ case "$1" in
     ""|-h|--help) usage; exit 0 ;;
     -n) [ $# -eq 2 ] || fail "-n needs a link"; line="zefyreborn:cmd navigate $2"; foreground=1 ;;
     -s) v=${2:-1}; mode "$v"; line="zefyreborn:cmd shuffle $v" ;;
-    -r) v=${2:-1}; mode "$v"; line="zefyreborn:cmd repeat $v" ;;
+    -r) v=${2:-1}; mode3 "$v"; line="zefyreborn:cmd repeat $v" ;;
     --next) line="zefyreborn:cmd next" ;;
     --prev) line="zefyreborn:cmd prev" ;;
     --pause) line="zefyreborn:cmd pause" ;;
     --resume) line="zefyreborn:cmd resume" ;;
+    --toggle) line="zefyreborn:cmd toggle" ;;
     --seek) [ $# -eq 2 ] || fail "--seek needs seconds"; num "$2"; line="zefyreborn:cmd seek $2" ;;
     -k) v=${2:-1}; mode "$v"; line="zefyreborn:cmd like $v" ;;
     -a) [ $# -eq 2 ] || fail "-a needs a playlist uri"; line="zefyreborn:cmd playlist-add $2" ;;
     -d) [ $# -eq 2 ] || fail "-d needs a playlist uri"; line="zefyreborn:cmd playlist-remove $2" ;;
-    --setmyplaylist) [ $# -eq 2 ] || fail "--setmyplaylist needs a playlist uri"; $JB/usr/bin/defaults write $domain myPlaylist "$2"; echo "saved $2"; exit 0 ;;
+    --setmyplaylist) [ $# -eq 2 ] || fail "--setmyplaylist needs a playlist uri"; $JB/usr/bin/defaults write $domain myPlaylist "$2"; echo "My Playlist saved"; exit 0 ;;
     --myplaylist) mine; line="${m}:play"; foreground=1 ;;
     --addtomyplaylist) mine; line="zefyreborn:cmd playlist-add $m" ;;
     --removefrommyplaylist) mine; line="zefyreborn:cmd playlist-remove $m" ;;
@@ -95,6 +104,10 @@ case "$1" in
     -*) fail "unknown option $1 (see -h)" ;;
     *) [ $# -eq 1 ] || fail "one link at a time"; line="$1"; foreground=1 ;;
 esac
+
+# Controls answer with what happened; links and page opens show Spotify itself.
+case "$line" in zefyreborn:cmd\ *) [ $wait_result -eq 0 ] && [ $foreground -eq 0 ] && { wait_result=1; quiet=1; } ;; esac
+noanswer() { if [ $quiet -eq 1 ]; then echo "Sent to Spotify"; else echo "No answer from Spotify"; fi; }
 
 # Finding Spotify's data folder means reading every app container's metadata, which is slow, so the answer
 # is kept in a cache file and checked cheaply on each run.
@@ -136,12 +149,12 @@ if [ $use_relay -eq 1 ]; then
     ask() {   # ask <request> <seconds>: send a request to SpringBoard and wait for its answer
         rm -f $sb.sbresult
         printf '%s\n' "$1" > $sb.sbcmd.tmp && mv $sb.sbcmd.tmp $sb.sbcmd
-        n=0; max=$(( $2 * 5 ))
-        while [ $n -lt $max ]; do
+        until=$(( $(date +%s) + $2 ))
+        while [ $(date +%s) -lt $until ]; do
             [ -r $sb.sbresult ] && return 0
-            sleep 0.2; n=$((n+1))
+            sleep 0.2
         done
-        return 1
+        [ -r $sb.sbresult ]
     }
     if [ $wait_result -eq 2 ]; then
         ask "nowplaying" 3 || { echo "SpringBoard did not answer (is the tweak loaded there?)"; exit 1; }
@@ -157,7 +170,10 @@ if [ $use_relay -eq 1 ]; then
         exit 0
     fi
     if [ $wait_result -eq 1 ]; then
-        ask "relay-wait $line" 10 && cat $sb.sbresult || echo "No answer from Spotify"
+        # SpringBoard waits for Spotify's answer for the time left (less a second for this side) and answers
+        # zefy:no-answer when there was none.
+        w=$(( $(secs_left) - 1 )); [ $w -lt 1 ] && w=1
+        if ask "relay-wait $w $line" $((w + 1)) && [ "$(cat $sb.sbresult)" != "zefy:no-answer" ]; then cat $sb.sbresult; else noanswer; fi
     else
         ask "relay $line" 3 || { echo "SpringBoard did not answer (is the tweak loaded there?)"; exit 1; }
     fi
@@ -195,10 +211,9 @@ if [ $foreground -eq 1 ] || ! ps -ax -o comm | grep -q "Spotify.app/Spotify"; th
     $JB/usr/bin/uiopen --bundleid com.spotify.client
 fi
 if [ $wait_result -eq 1 ]; then
-    n=0
-    while [ $n -lt 40 ]; do
+    while [ $(date +%s) -lt $deadline ]; do
         if [ -r "$dir/zefyreborn.result" ]; then cat "$dir/zefyreborn.result"; exit 0; fi
-        sleep 0.2; n=$((n+1))
+        sleep 0.2
     done
-    echo "No answer from Spotify"
+    noanswer
 fi
